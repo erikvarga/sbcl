@@ -441,14 +441,18 @@
 (with-test (:name (:integer-division-using-multiplication :correctness))
   (let ((*random-state* (make-random-state t)))
     (dolist (dividend-type `((unsigned-byte ,sb-vm:n-word-bits)
+                             (integer 0 ,(- (expt 2 sb-vm:n-word-bits) 2))
                              (and fixnum unsigned-byte)
                              (integer 10000 10100)))
       (dolist (divisor `(;; Some special cases from the paper
                          7 10 14 641 274177
+                         ;; Cases where multiply-add is used
+                         19 173 797 235425 235427
                          ;; Range extremes
                          3
                          ,most-positive-fixnum
                          ,(1- (expt 2 sb-vm:n-word-bits))
+                         ,(- (expt 2 sb-vm:n-word-bits) 2)
                          ;; Some random values
                          ,@(loop for i from 8 to sb-vm:n-word-bits
                                  for r = (random (expt 2 i))
