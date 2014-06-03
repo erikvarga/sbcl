@@ -449,7 +449,18 @@
                              (and fixnum unsigned-byte)
                              fixnum
                              (integer 10000 10100)
-                             (integer -1000 1000)))
+                             (integer -1000 1000)
+                             (integer ,(- (expt 2 (1- sb-vm:n-word-bits))) 100)
+                             ;; A few random ranges
+                             ,@(loop repeat 4
+                                    for range1 =
+                                       (- (expt 2 (random sb-vm:n-word-bits))
+                                          (expt 2 (random (1- sb-vm:n-word-bits))))
+                                    for range2 =
+                                       (- (expt 2 (random sb-vm:n-word-bits))
+                                          (expt 2 (random (1- sb-vm:n-word-bits))))
+                                  collect `(integer ,(min range1 range2)
+                                                    ,(max range1 range2)))))
       (dolist (divisor `(;; Some special cases from the paper
                          7 10 14 641 274177
                          ;; Negative values
