@@ -417,47 +417,70 @@
                                     (print (list :ok `(,op ,@args) :=> fast-result))
                                     (error "oops: ~S, ~S" args call-args)))))))))))
 
-;;; (TRUNCATE <unsigned-word> <constant unsigned-word>) is optimized
-;;; to use multiplication instead of division. This propagates to FLOOR,
+;;; (TRUNCATE <unsigned-word> <constant unsigned-word>) and
+;;; (TRUNCATE <signed-word> <constant signed-word>) is optimized to
+;;; use multiplication instead of division. This propagates to FLOOR,
 ;;; MOD and REM. Test that the transform is indeed triggered and test
 ;;; several cases for correct results.
 (with-test (:name (:integer-division-using-multiplication :used)
                   :skipped-on '(not (or :x86-64 :x86)))
   (dolist (fun '(truncate floor ceiling mod rem))
-    (let* ((foo (compile nil `(lambda (x)
-                                (declare (optimize (speed 3)
-                                                   (space 1)
-                                                   (compilation-speed 0))
-                                         (type (unsigned-byte
-                                                ,sb-vm:n-word-bits) x))
-                                (,fun x 9))))
-           (disassembly (with-output-to-string (s)
-                          (disassemble foo :stream s))))
-      ;; KLUDGE copied from test :float-division-using-exact-reciprocal
-      ;; in compiler.pure.lisp.
-      (assert (and (not (search "DIV" disassembly))
-                   (search "MUL" disassembly))))))
+    (dolist (arg-type `((unsigned-byte ,sb-vm:n-word-bits)
+                        (signed-byte ,sb-vm:n-word-bits)))
+      (let* ((foo (compile nil `(lambda (x)
+                                  (declare (optimize (speed 3)
+                                                     (space 1)
+                                                     (compilation-speed 0))
+                                           (type ,arg-type x))
+                                  (,fun x 9))))
+             (disassembly (with-output-to-string (s)
+                            (disassemble foo :stream s))))
+        ;; KLUDGE copied from test :float-division-using-exact-reciprocal
+        ;; in compiler.pure.lisp.
+        (assert (and (not (search "DIV" disassembly))
+                     (or (equal arg-type `(signed-byte ,sb-vm:n-word-bits))
+                         (search "MUL" disassembly))))))))
 
 (with-test (:name (:integer-division-using-multiplication :correctness))
   (let ((*random-state* (make-random-state t)))
     (dolist (dividend-type `((unsigned-byte ,sb-vm:n-word-bits)
+                             (signed-byte ,sb-vm:n-word-bits)
                              (integer 0 ,(- (expt 2 sb-vm:n-word-bits) 2))
                              (and fixnum unsigned-byte)
-                             (integer 10000 10100)))
+                             fixnum
+                             (integer 10000 10100)
+                             (integer -1000 1000)
+                             (integer ,(- (expt 2 (1- sb-vm:n-word-bits))) 100)
+                             ;; A few random ranges
+                             ,@(loop repeat 4
+                                    for range1 =
+                                       (- (expt 2 (random sb-vm:n-word-bits))
+                                          (expt 2 (random (1- sb-vm:n-word-bits))))
+                                    for range2 =
+                                       (- (expt 2 (random sb-vm:n-word-bits))
+                                          (expt 2 (random (1- sb-vm:n-word-bits))))
+                                  collect `(integer ,(min range1 range2)
+                                                    ,(max range1 range2)))))
       (dolist (divisor `(;; Some special cases from the paper
                          7 10 14 641 274177
+                         ;; Negative values
+                         -7 -10 -14 -641 -274177
                          ;; Cases where multiply-add is used
                          19 173 797 235425 235427
                          ;; Range extremes
                          3
                          ,most-positive-fixnum
+                         ,(1+ most-negative-fixnum)
                          ,(1- (expt 2 sb-vm:n-word-bits))
                          ,(- (expt 2 sb-vm:n-word-bits) 2)
+                         ,(1- (expt 2 31))
+                         ,(- 1 (expt 2 31))
                          ;; Some random values
                          ,@(loop for i from 8 to sb-vm:n-word-bits
-                                 for r = (random (expt 2 i))
+                                 for r = (- (random (expt 2 (1+ i)))
+                                            (expt 2 i))
                                  ;; We don't want 0, 1 and powers of 2.
-                                 when (not (zerop (logand r (1- r))))
+                                 when (not (zerop (logand (abs r) (1- (abs r)))))
                                  collect r)))
         (dolist (fun '(truncate ceiling floor mod rem))
           (let ((foo (compile nil `(lambda (x)
@@ -466,25 +489,34 @@
                                                         (compilation-speed 0))
                                               (type ,dividend-type x))
                                      (,fun x ,divisor)))))
-            (dolist (dividend `(0 1 ,most-positive-fixnum
+            (dolist (dividend `(0 1 -1
+                                ,most-positive-fixnum
+                                ,most-negative-fixnum
                                 ,(1- divisor) ,divisor
                                 ,(1- (* divisor 2)) ,(* divisor 2)
                                 ,@(loop repeat 4
-                                        collect (+ 10000 (random 101)))
+                                        collect (+ 10000 (random 101))
+                                        collect (- -10000 (random 101)))
                                 ,@(loop for i from 4 to sb-vm:n-word-bits
                                         for pow = (expt 2 (1- i))
                                         for r = (+ pow (random pow))
-                                        collect r)))
+                                        collect r
+                                        collect (- r))))
               (when (typep dividend dividend-type)
-                (multiple-value-bind (q1 r1)
-                    (funcall foo dividend)
-                  (multiple-value-bind (q2 r2)
-                      (funcall fun dividend divisor)
-                    (unless (and (= q1 q2)
-                                 (eql r1 r2))
-                      (error "bad results for ~s with dividend type ~s"
-                             (list fun dividend divisor)
-                             dividend-type))))))))))))
+                ;; Do the test only if the args are
+                ;; both either signed or unsigned words
+                (dolist (arg-type `((unsigned-byte ,sb-vm:n-word-bits)
+                                    (signed-byte ,sb-vm:n-word-bits)))
+                  (when (and (typep dividend arg-type) (typep divisor arg-type))
+                    (multiple-value-bind (q1 r1)
+                        (funcall foo dividend)
+                      (multiple-value-bind (q2 r2)
+                          (funcall fun dividend divisor)
+                        (unless (and (= q1 q2)
+                                     (eql r1 r2))
+                          (error "bad results for ~s with dividend type ~s"
+                                 (list fun dividend divisor)
+                                 dividend-type))))))))))))))
 
 ;; The fast path for logbitp underestimated sb!vm:n-positive-fixnum-bits
 ;; for > 61 bit fixnums.

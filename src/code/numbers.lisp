@@ -657,6 +657,12 @@
   #!+multiply-high-vops
   (%multiply-high x y))
 
+(declaim (inline %signed-multiply-high))
+(defun %signed-multiply-high (x y)
+;; TODO: Better implementation (VOPs, etc.)
+  (declare (type sb!vm:signed-word x y))
+  (ash (* x y) (- sb!vm:n-word-bits)))
+
 (defun floor (number &optional (divisor 1))
   #!+sb-doc
   "Return the greatest integer not greater than number, or number/divisor.
@@ -1368,7 +1374,7 @@ and the number of 0 bits if INTEGER is negative."
                        (setq temp (- u v))
                        (when (zerop temp)
                          (let ((res (ash u k)))
-                           (declare (type sb!vm:signed-word res)
+                           (declare (type sb!vm:word res)
                                     (optimize (inhibit-warnings 3)))
                            (return res))))))
                 (declare (type (mod #.sb!vm:n-word-bits) k)

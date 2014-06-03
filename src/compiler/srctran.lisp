@@ -3349,6 +3349,33 @@
            (- (logand (- x) ,mask))
            (logand x ,mask)))))
 
+;;; Get the multiply-high multiplier that can be used instead of
+;;; dividing by y. Used in gen-(un)signed-div-by-constant-expr
+(defun choose-multiplier (y precision)
+  (do* ((l (integer-length (1- y)))
+        (shift l (1- shift))
+        (expt-2-n+l (expt 2 (+ sb!vm:n-word-bits l)))
+        (m-low (truncate expt-2-n+l y) (ash m-low -1))
+        (m-high (truncate (+ expt-2-n+l
+                             (ash expt-2-n+l (- precision)))
+                          y)
+                (ash m-high -1)))
+       ((not (and (< (ash m-low -1) (ash m-high -1))
+                  (> shift 0)))
+        (values m-high shift))))
+
+;;; Get the direct multiplier that can be used instead of
+;;; dividing by y. Used in gen-(un)signed-div-by-constant-expr
+(defun choose-direct-multiplier (y max-x)
+  (let* ((max-shift (+ (integer-length max-x) (integer-length y)))
+         (scale (ash 1 max-shift))
+         (low (floor scale y))
+         (k (1- (ceiling scale max-x)))
+         (high (floor (+ scale k) y))
+         (diff (logxor low high))
+         (delta (1- (integer-length diff))))
+    (values (ash high (- delta)) (- max-shift delta))))
+
 ;;; Return an expression to calculate the integer quotient of X and
 ;;; constant Y, using multiplication, shift and add/sub instead of
 ;;; division. Both arguments must be unsigned, fit in a machine word and
@@ -3394,30 +3421,9 @@
   (declare (type (integer 3 #.most-positive-word) y)
            (type word max-x))
   (aver (not (zerop (logand y (1- y)))))
-  (labels ((ld (x)
+  (flet ((ld (x)
              ;; the floor of the binary logarithm of (positive) X
-             (integer-length (1- x)))
-           (choose-multiplier (y precision)
-             (do* ((l (ld y))
-                   (shift l (1- shift))
-                   (expt-2-n+l (expt 2 (+ sb!vm:n-word-bits l)))
-                   (m-low (truncate expt-2-n+l y) (ash m-low -1))
-                   (m-high (truncate (+ expt-2-n+l
-                                        (ash expt-2-n+l (- precision)))
-                                     y)
-                           (ash m-high -1)))
-                  ((not (and (< (ash m-low -1) (ash m-high -1))
-                             (> shift 0)))
-                   (values m-high shift))))
-           (choose-direct-multiplier (y max-x)
-             (let* ((max-shift (+ (integer-length max-x) (integer-length y)))
-                    (scale (ash 1 max-shift))
-                    (low (floor scale y))
-                    (k (1- (ceiling scale max-x)))
-                    (high (floor (+ scale k) y))
-                    (diff (logxor low high))
-                    (delta (1- (integer-length diff))))
-               (values (ash high (- delta)) (- max-shift delta)))))
+             (integer-length (1- x))))
     (let ((n (expt 2 sb!vm:n-word-bits))
           (precision (integer-length max-x))
           (shift1 0))
@@ -3466,6 +3472,64 @@
                   `(ash (%multiply-high (logandc2 x ,(1- (ash 1 shift1))) ,m)
                         ,(- (+ shift1 shift2)))))))))))
 
+;;; Return an expression for calculating the quotient like in the previous
+;;; function, but the arguments have to fit in signed words.
+;;; The algorithm is taken from the same paper, Figure 5.2
+(defun gen-signed-div-by-constant-expr (y min-x max-x)
+  (declare (type (or (integer #.(- (expt 2 (1- sb!vm:n-word-bits))) -3)
+                     (integer 3 #.(expt 2 (1- sb!vm:n-word-bits)))) y)
+           (type sb!vm:signed-word min-x max-x))
+  (aver (not (zerop (logand (abs y) (1- (abs y))))))
+  (aver (<= min-x max-x))
+  (flet ((ld (x)
+             ;; the floor of the binary logarithm of (positive) X
+             (integer-length (1- x)))
+           (add-extension (expr)
+             (setq expr `(- ,expr
+                            (ash num ,(- sb!vm:n-word-bits))))
+             (when (minusp y)
+               (setq expr `(- ,expr)))
+             (setq expr `(let ((num x))
+                           ,expr))
+             expr))
+    (let* ((n (expt 2 (1- sb!vm:n-word-bits)))
+           (precision (max (integer-length min-x) (integer-length max-x)))
+           (shift1 0))
+      (multiple-value-bind (m shift2)
+          (choose-direct-multiplier (abs y) (max (abs max-x) (abs min-x)))
+        (cond
+          ((and (< (max (* max-x m) (* min-x m)) n)
+                (>= (min (* max-x m) (* min-x m)) (- n)))
+           (add-extension
+            `(ash (* num ,m) ,(- shift2))))
+          (t
+           (multiple-value-setq (m shift2)
+             (choose-multiplier (abs y) precision))
+           (when (and nil (>= m n) (evenp y))
+             ;;TODO: Scaling
+             (setq shift1 (ld (logand y (- y))))
+             (multiple-value-setq (m shift2)
+               (choose-multiplier (/ (abs y) (ash 1 shift1))
+                                  (- precision shift1))))
+           (cond ((>= m n)
+                  (add-extension
+                   `(ash (+ num
+                            (sb!kernel::%signed-multiply-high num ,(- m (* 2 n))))
+                         ,(- shift2))))
+                 ((zerop shift2)
+                  (let ((max (truncate max-x y))
+                        (min (truncate min-x y)))
+                    (when (minusp y) (rotatef min max))
+                    ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
+                    ;; VOP.
+                    `(truly-the (integer ,min ,max)
+                                ,(add-extension
+                                  `(sb!kernel::%signed-multiply-high num ,m)))))
+                 (t
+                  (add-extension
+                   `(ash (sb!kernel::%signed-multiply-high num ,m)
+                         ,(- shift2)))))))))))
+
 ;;; If the divisor is constant and both args are positive and fit in a
 ;;; machine word, replace the division by a multiplication and possibly
 ;;; some shifts and an addition. Calculate the remainder by a second
@@ -3479,7 +3543,7 @@
                         *
                         :policy (and (> speed compilation-speed)
                                      (> speed space)))
-  "convert integer division to multiplication"
+  "convert unsigned integer division to multiplication"
   (let* ((y      (lvar-value y))
          (x-type (lvar-type x))
          (max-x  (or (and (numeric-type-p x-type)
@@ -3492,6 +3556,30 @@
             (rem (ldb (byte #.sb!vm:n-word-bits 0)
                       (- x (* quot ,y)))))
        (values quot rem))))
+
+;;; Similar to previous transform, but with signed args
+(deftransform truncate ((x y) (sb!vm:signed-word
+                               (constant-arg sb!vm:signed-word))
+                        *
+                        :policy (and (> speed compilation-speed)
+                                     (> speed space)))
+  "convert signed integer division to multiplication"
+  (let* ((y      (lvar-value y))
+         (x-type (lvar-type x))
+         (max-x  (or (and (numeric-type-p x-type)
+                          (numeric-type-high x-type))
+                     (- (expt 2 (1- sb!vm:n-word-bits)) 1)))
+         (min-x  (or (and (numeric-type-p x-type)
+                          (numeric-type-low x-type))
+                     (- (expt 2 (1- sb!vm:n-word-bits))))))
+    ;; Division by zero, one or powers of two is handled elsewhere.
+    (when (zerop (logand (abs y) (1- (abs y))))
+      (give-up-ir1-transform))
+    `(let* ((quot ,(gen-signed-div-by-constant-expr y min-x max-x))
+            (rem (mask-signed-field sb!vm:n-word-bits
+                                    (- x (* quot ,y)))))
+       (values quot rem))))
+
 
 ;;;; arithmetic and logical identity operation elimination
 
