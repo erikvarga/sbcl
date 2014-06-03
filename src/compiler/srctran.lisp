@@ -3488,11 +3488,12 @@
            (precision (integer-length max-x))
            (shift1 0))
       (multiple-value-bind (m shift2)
-          (choose-direct-multiplier y max-x)
+          (choose-direct-multiplier (abs y) (max (abs max-x) (abs min-x)))
         (cond
-          ((and nil (< (* max-x m) n))
-           ;;TODO: Direct multiplication
-           nil)
+          ((and (< (max (* max-x m) (* min-x m)) n)
+                (>= (min (* max-x m) (* min-x m)) (- n)))
+           (add-extension
+            `(ash (* num ,m) ,(- shift2))))
           (t
            (multiple-value-setq (m shift2)
              (choose-multiplier (abs y) precision))
