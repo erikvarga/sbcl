@@ -3485,7 +3485,7 @@
                            ,expr))
              expr))
     (let* ((n (expt 2 (1- sb!vm:n-word-bits)))
-           (precision (integer-length max-x))
+           (precision (max (integer-length min-x) (integer-length max-x)))
            (shift1 0))
       (multiple-value-bind (m shift2)
           (choose-direct-multiplier (abs y) (max (abs max-x) (abs min-x)))
