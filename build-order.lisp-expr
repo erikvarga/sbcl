@@ -517,6 +517,7 @@
  ("src/compiler/generic/vm-typetran")
  ("src/compiler/float-tran")
  ("src/compiler/saptran")
+ ("src/compiler/const-div-tran")
  ("src/compiler/srctran")
  ("src/compiler/bitops-derive-type")
  ("src/compiler/generic/vm-tran")
