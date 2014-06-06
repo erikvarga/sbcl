@@ -199,19 +199,18 @@
 ;;;
 ;;; The following two examples show an average case and the worst case
 ;;; with respect to the complexity of the generated expression, under
-;;; a word size of 64 bits:
+;;; a word size of 32 bits:
 ;;;
-;;; (UNSIGNED-DIV-TRANSFORMER 10 MOST-POSITIVE-WORD) ->
-;;; (ASH (%MULTIPLY (LOGANDC2 X 0) 14757395258967641293) -3)
+;;; (GEN-UNSIGNED-DIV-BY-CONSTANT-EXPR 10 MOST-POSITIVE-WORD) ->
+;;; (ASH (%MULTIPLY-HIGH (LOGANDC2 X 0) 3435973837) -3)
 ;;;
-;;; (UNSIGNED-DIV-TRANSFORMER 7 MOST-POSITIVE-WORD) ->
+;;; (GEN-UNSIGNED-DIV-BY-CONSTANT-EXPR 7 MOST-POSITIVE-WORD) ->
 ;;; (LET* ((NUM X)
-;;;        (T1 (%MULTIPLY NUM 2635249153387078803)))
-;;;   (ASH (LDB (BYTE 64 0)
-;;;             (+ T1 (ASH (LDB (BYTE 64 0)
-;;;                             (- NUM T1))
-;;;                        -1)))
-;;;        -2))
+;;;        (T1 (%MULTIPLY-HIGH NUM 613566757)))
+;;;   (ASH
+;;;    (TRULY-THE WORD
+;;;               (+ T1 (ASH (TRULY-THE WORD (- NUM T1)) -1)))
+;;;    -2))
 ;;;
 (defun gen-unsigned-div-by-constant-expr (y max-x)
   (declare (type (integer 3 #.most-positive-word) y)
@@ -270,6 +269,29 @@
 ;;; Return an expression for calculating the quotient like in the previous
 ;;; function, but the arguments have to fit in signed words.
 ;;; The algorithm is taken from the same paper, Figure 5.2
+;;;
+;;; The following two examples show an average case and the worst case
+;;; with respect to the complexity of the generated expression, under
+;;; a word size of 32 bits:
+;;;
+;;; (GEN-SIGNED-DIV-BY-CONSTANT-EXPR 11 (- (EXPT 2 (1- SB-VM:N-WORD-BITS)))
+;;;                                  (1- (EXPT 2 (1- SB-VM:N-WORD-BITS)))) ->
+;;; (LET ((NUM X))
+;;;   (TRULY-THE (INTEGER -195225786 195225786)
+;;;              (- (ASH (%SIGNED-MULTIPLY-HIGH NUM 780903145) -1) (ASH NUM -32))))
+;;;
+;;; (GEN-SIGNED-DIV-BY-CONSTANT-EXPR 7 (- (EXPT 2 (1- SB-VM:N-WORD-BITS)))
+;;;                                  (1- (EXPT 2 (1- SB-VM:N-WORD-BITS)))) ->
+;;; (LET ((NUM X))
+;;;   (TRULY-THE (INTEGER -306783378 306783378)
+;;;              (-
+;;;               (ASH
+;;;                (TRULY-THE SB-VM:SIGNED-WORD
+;;;                           (+ NUM (%SIGNED-MULTIPLY-HIGH NUM -1840700269)))
+;;;                -2)
+;;;               (ASH NUM -32))))
+;;;
+
 (defun gen-signed-div-by-constant-expr (y min-x max-x)
   (declare (type (or (integer #.(- (expt 2 (1- sb!vm:n-word-bits))) -3)
                      (integer 3 #.(expt 2 (1- sb!vm:n-word-bits)))) y)
