@@ -284,8 +284,12 @@
                             (ash num ,(- sb!vm:n-word-bits))))
              (when (minusp y)
                (setq expr `(- ,expr)))
-             (setq expr `(let ((num x))
-                           ,expr))
+             (let ((max (truncate max-x y))
+                   (min (truncate min-x y)))
+               (when (minusp y) (rotatef min max))
+               (setq expr `(let ((num x))
+                             (truly-the (integer ,min ,max)
+                                        ,expr))))
              expr))
     (let* ((n (expt 2 (1- sb!vm:n-word-bits)))
            (precision (max (integer-length min-x) (integer-length max-x))))
@@ -301,21 +305,25 @@
              (choose-multiplier (abs y) precision))
            (cond ((>= m n)
                   (add-extension
-                   `(ash (+ num
-                            (sb!kernel::%signed-multiply-high num ,(- m (* 2 n))))
+                   `(ash (truly-the
+                          sb!vm:signed-word
+                          (+ num
+                             (%signed-multiply-high num ,(- m (* 2 n)))))
                          ,(- shift))))
                  ((zerop shift)
-                  (let ((max (truncate max-x y))
-                        (min (truncate min-x y)))
-                    (when (minusp y) (rotatef min max))
-                    ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
-                    ;; VOP.
-                    `(truly-the (integer ,min ,max)
-                                ,(add-extension
-                                  `(sb!kernel::%signed-multiply-high num ,m)))))
+                  ;; Determine the range of the quotient before
+                  ;; ADD-EXTENSION is applied to it
+                  (let ((max (truncate max-x (abs y)))
+                         (min (truncate min-x (abs y))))
+                    (setq min (1- min))
+                    (add-extension
+                      ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
+                      ;; VOP.
+                      `(truly-the (integer ,min ,max)
+                                  (%signed-multiply-high num ,m)))))
                  (t
                   (add-extension
-                   `(ash (sb!kernel::%signed-multiply-high num ,m)
+                   `(ash (%signed-multiply-high num ,m)
                          ,(- shift)))))))))))
 
 ;;; If the divisor is constant and both args are positive and fit in a
@@ -364,6 +372,6 @@
     (when (zerop (logand (abs y) (1- (abs y))))
       (give-up-ir1-transform))
     `(let* ((quot ,(gen-signed-div-by-constant-expr y min-x max-x))
-            (rem (mask-signed-field sb!vm:n-word-bits
-                                    (- x (* quot ,y)))))
+            (rem (truly-the (integer ,(- 1 (abs y)) ,(- (abs y) 1))
+                            (- x (* quot ,y)))))
        (values quot rem))))

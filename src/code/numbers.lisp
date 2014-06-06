@@ -657,11 +657,22 @@
   #!+multiply-high-vops
   (%multiply-high x y))
 
-(declaim (inline %signed-multiply-high))
+#!-multiply-high-vops (declaim (inline %signed-multiply-high))
 (defun %signed-multiply-high (x y)
-;; TODO: Better implementation (VOPs, etc.)
   (declare (type sb!vm:signed-word x y))
-  (ash (* x y) (- sb!vm:n-word-bits)))
+  #!-multiply-high-vops
+  (let ((prod-sign (logxor (ash x (- sb!vm:n-word-bits))
+                           (ash y (- sb!vm:n-word-bits)))))
+    (multiple-value-bind (hi lo)
+        (sb!bignum:%multiply (abs x) (abs y))
+      (setq hi (logxor hi prod-sign))
+      ;; Correct HI when the product is negative and
+      ;; a multiple of 2^W
+      (when (and (zerop lo) (= -1 prod-sign))
+        (incf hi))
+      hi))
+  #!+multiply-high-vops
+  (%signed-multiply-high x y))
 
 (defun floor (number &optional (divisor 1))
   #!+sb-doc

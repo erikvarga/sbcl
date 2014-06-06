@@ -1193,6 +1193,34 @@
     (inst lr mask fixnum-tag-mask)
     (inst andc hi temp mask)))
 
+#!+multiply-high-vops
+(define-vop (smulhi)
+  (:translate %signed-multiply-high)
+  (:policy :fast-safe)
+  (:args (x :scs (signed-reg))
+         (y :scs (signed-reg)))
+  (:arg-types signed-num signed-num)
+  (:results (hi :scs (signed-reg)))
+  (:result-types signed-num)
+  (:generator 20
+    (inst mulhw hi x y)))
+
+#!+multiply-high-vops
+(define-vop (smulhi/fx)
+  (:translate %signed-multiply-high)
+  (:policy :fast-safe)
+  (:args (x :scs (any-reg))
+         (y :scs (signed-reg)))
+  (:arg-types tagged-num signed-num)
+  (:temporary (:sc non-descriptor-reg :from :eval :to :result) temp)
+  (:temporary (:sc non-descriptor-reg :from :eval :to :result) mask)
+  (:results (hi :scs (any-reg)))
+  (:result-types tagged-num)
+  (:generator 15
+    (inst mulhw temp x y)
+    (inst lr mask fixnum-tag-mask)
+    (inst andc hi temp mask)))
+
 (define-vop (bignum-lognot lognot-mod32/unsigned=>unsigned)
   (:translate sb!bignum:%lognot))
 

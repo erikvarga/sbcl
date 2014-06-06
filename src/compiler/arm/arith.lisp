@@ -905,6 +905,33 @@
     (inst umull lo hi x y)
     (inst bic hi hi fixnum-tag-mask)))
 
+#!+multiply-high-vops
+(define-vop (smulhi)
+  (:translate %signed-multiply-high)
+  (:policy :fast-safe)
+  (:args (x :scs (signed-reg) :target hi)
+         (y :scs (signed-reg)))
+  (:arg-types signed-num signed-num)
+  (:temporary (:sc signed-reg) lo)
+  (:results (hi :scs (signed-reg)))
+  (:result-types signed-num)
+  (:generator 20
+    (inst smull lo hi x y)))
+
+#!+multiply-high-vops
+(define-vop (smulhi/fx)
+  (:translate %signed-multiply-high)
+  (:policy :fast-safe)
+  (:args (x :scs (any-reg) :target hi)
+         (y :scs (signed-reg)))
+  (:arg-types tagged-num signed-num)
+  (:temporary (:sc any-reg) lo)
+  (:results (hi :scs (any-reg)))
+  (:result-types tagged-num)
+  (:generator 15
+    (inst smull lo hi x y)
+    (inst bic hi hi fixnum-tag-mask)))
+
 (define-vop (bignum-lognot lognot-mod32/unsigned=>unsigned)
   (:translate sb!bignum:%lognot))
 
