@@ -196,23 +196,6 @@
 ;;; described in the paper "N-Bit Unsigned Division Via N-Bit Multiply-Add",
 ;;; 2005 by Arch D. Robison.  Once again, use multiply-high only if
 ;;; multiplication and shifting cannot be done directly.
-;;;
-;;; The following two examples show an average case and the worst case
-;;; with respect to the complexity of the generated expression, under
-;;; a word size of 64 bits:
-;;;
-;;; (UNSIGNED-DIV-TRANSFORMER 10 MOST-POSITIVE-WORD) ->
-;;; (ASH (%MULTIPLY (LOGANDC2 X 0) 14757395258967641293) -3)
-;;;
-;;; (UNSIGNED-DIV-TRANSFORMER 7 MOST-POSITIVE-WORD) ->
-;;; (LET* ((NUM X)
-;;;        (T1 (%MULTIPLY NUM 2635249153387078803)))
-;;;   (ASH (LDB (BYTE 64 0)
-;;;             (+ T1 (ASH (LDB (BYTE 64 0)
-;;;                             (- NUM T1))
-;;;                        -1)))
-;;;        -2))
-;;;
 (defun gen-unsigned-div-by-constant-expr (y max-x)
   (declare (type (integer 3 #.most-positive-word) y)
            (type word max-x))
@@ -267,9 +250,27 @@
                   `(ash (%multiply-high (logandc2 x ,(1- (ash 1 shift1))) ,m)
                         ,(- (+ shift1 shift2)))))))))))
 
+;;; The following two asserts show the expected average case and worst case
+;;; with respect to the complexity of the generated expression of the previous,
+;;; function, under a word size of 32 bits:
+#+sb-xc-host
+(progn
+  (assert (or (/= sb-vm:n-word-bits 32)
+              (equal (gen-unsigned-div-by-constant-expr 10 most-positive-word)
+                     '(ash (%multiply-high (logandc2 x 0) 3435973837) -3))))
+  (assert (or (/= sb-vm:n-word-bits 32)
+              (equal (gen-unsigned-div-by-constant-expr 7 most-positive-word)
+                     '(let* ((num x)
+                            (t1 (%multiply-high num 613566757)))
+                       (ash
+                        (truly-the word
+                                   (+ t1 (ash (truly-the word (- num t1)) -1)))
+                        -2))))))
+
 ;;; Return an expression for calculating the quotient like in the previous
 ;;; function, but the arguments have to fit in signed words.
 ;;; The algorithm is taken from the same paper, Figure 5.2
+
 (defun gen-signed-div-by-constant-expr (y min-x max-x)
   (declare (type (or (integer #.(- (expt 2 (1- sb!vm:n-word-bits))) -3)
                      (integer 3 #.(expt 2 (1- sb!vm:n-word-bits)))) y)
@@ -325,6 +326,33 @@
                   (add-extension
                    `(ash (%signed-multiply-high num ,m)
                          ,(- shift)))))))))))
+
+;;; The following two asserts show the expected average case and worst case
+;;; with respect to the complexity of the generated expression of the previous,
+;;; function, under a word size of 32 bits:
+#+sb-xc-host
+(progn
+  (assert (or (/= sb!vm:n-word-bits 32)
+              (equal
+               (gen-signed-div-by-constant-expr 11
+                                     (- (expt 2 (1- sb!vm:n-word-bits)))
+                                     (1- (expt 2 (1- sb!vm:n-word-bits))))
+               '(let ((num x))
+                 (truly-the (integer -195225786 195225786)
+                            (- (ash (%signed-multiply-high num 780903145) -1)
+                               (ash num -32)))))))
+  (assert (or (/= sb!vm:n-word-bits 32)
+              (equal
+               (gen-signed-div-by-constant-expr 7
+                                     (- (expt 2 (1- sb!vm:n-word-bits)))
+                                     (1- (expt 2 (1- sb!vm:n-word-bits))))
+               '(let ((num x))
+                 (truly-the (integer -306783378 306783378)
+                  (- (ash
+                      (truly-the sb!vm:signed-word
+                                 (+ num (%signed-multiply-high num -1840700269)))
+                      -2)
+                   (ash num -32))))))))
 
 ;;; If the divisor is constant and both args are positive and fit in a
 ;;; machine word, replace the division by a multiplication and possibly
