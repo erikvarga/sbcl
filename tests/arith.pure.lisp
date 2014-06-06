@@ -438,8 +438,7 @@
         ;; KLUDGE copied from test :float-division-using-exact-reciprocal
         ;; in compiler.pure.lisp.
         (assert (and (not (search "DIV" disassembly))
-                     (or (equal arg-type `(signed-byte ,sb-vm:n-word-bits))
-                         (search "MUL" disassembly))))))))
+                     (search "MUL" disassembly)))))))
 
 (with-test (:name (:integer-division-using-multiplication :correctness))
   (let ((*random-state* (make-random-state t)))

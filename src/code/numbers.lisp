@@ -653,11 +653,15 @@
   #!+multiply-high-vops
   (%multiply-high x y))
 
-(declaim (inline %signed-multiply-high))
+#!-multiply-high-vops (declaim (inline %signed-multiply-high))
 (defun %signed-multiply-high (x y)
-;; TODO: Better implementation (VOPs, etc.)
   (declare (type sb!vm:signed-word x y))
-  (ash (* x y) (- sb!vm:n-word-bits)))
+  #!-multiply-high-vops
+  (logxor
+   (%multiply-high (abs x) (abs y))
+   (logxor (ash x -32) (ash y -32)))
+  #!+multiply-high-vops
+  (%signed-multiply-high x y))
 
 (defun floor (number &optional (divisor 1))
   #!+sb-doc
