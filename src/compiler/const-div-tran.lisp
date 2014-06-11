@@ -304,21 +304,18 @@
            (type sb!vm:signed-word min-x max-x))
   (aver (not (zerop (logand (abs y) (1- (abs y))))))
   (aver (<= min-x max-x))
-  (flet ((ld (x)
-             ;; the floor of the binary logarithm of (positive) X
-             (integer-length (1- x)))
-           (add-extension (expr)
-             (setq expr `(- ,expr
-                            (ash num ,(- sb!vm:n-word-bits))))
-             (when (minusp y)
-               (setq expr `(- ,expr)))
-             (let ((max (truncate max-x y))
-                   (min (truncate min-x y)))
-               (when (minusp y) (rotatef min max))
-               (setq expr `(let ((num x))
-                             (truly-the (integer ,min ,max)
-                                        ,expr))))
-             expr))
+  (flet ((add-extension (expr)
+           (setq expr `(- ,expr
+                          (ash num ,(- sb!vm:n-word-bits))))
+           (when (minusp y)
+             (setq expr `(- ,expr)))
+           (let ((max (truncate max-x y))
+                 (min (truncate min-x y)))
+             (when (minusp y) (rotatef min max))
+             (setq expr `(let ((num x))
+                           (truly-the (integer ,min ,max)
+                                      ,expr))))
+           expr))
     (let* ((n (expt 2 (1- sb!vm:n-word-bits)))
            (precision (max (integer-length min-x) (integer-length max-x))))
       (multiple-value-bind (m shift)
@@ -387,11 +384,7 @@
 ;;; machine word, replace the division by a multiplication and possibly
 ;;; some shifts and an addition. Calculate the remainder by a second
 ;;; multiplication and a subtraction. Dead code elimination will
-;;; suppress the latter part if only the quotient is needed. If the type
-;;; of the dividend allows to derive that the quotient will always have
-;;; the same value, emit much simpler code to handle that. (This case
-;;; may be rare but it's easy to detect and the compiler doesn't find
-;;; this optimization on its own.)
+;;; suppress the latter part if only the quotient is needed.
 (deftransform truncate ((x y) (word (constant-arg word))
                         *
                         :policy (and (> speed compilation-speed)
