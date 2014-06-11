@@ -196,6 +196,12 @@
 ;;; described in the paper "N-Bit Unsigned Division Via N-Bit Multiply-Add",
 ;;; 2005 by Arch D. Robison.  Once again, use multiply-high only if
 ;;; multiplication and shifting cannot be done directly.
+;;; The function can return an expression either for truncated or ceilinged
+;;; division depending on the value of the DIV-TYPE argument. In the case
+;;; of ceiling, the expression is corrected according to section 6 of
+;;; Granlund & Montgomery's paper. The final correction is added outside of
+;;; the function, at the unsigned ceiling transform, because the
+;;; intermediate value is used for calculating the remainder.
 
 (defun gen-unsigned-div-by-constant-expr (y min-x max-x div-type)
   (declare (type (integer 3 #.most-positive-word) y)
@@ -203,13 +209,7 @@
   (aver (not (zerop (logand y (1- y)))))
   (flet ((ld (x)
              ;; the floor of the binary logarithm of (positive) X
-             (integer-length (1- x)))
-         (add-ceil-extension (expr div-type min-x)
-           (cond ((eq div-type 'truncate) expr)
-                 ((> min-x 0) `(+ ,expr 1))
-                 (t
-                  `(let ((ceil-correct (if (zerop x) 0 1)))
-                     (+ ,expr ceil-correct))))))
+             (integer-length (1- x))))
     (let ((n (expt 2 sb!vm:n-word-bits))
           (precision (integer-length max-x))
           (shift1 0)
@@ -222,13 +222,13 @@
         ;; was one smaller when comparing it to some other numbers
         (setq max-x-decr 1)
         (setq ceil-correct-expr (if (> min-x 0) 1 'ceil-correct))
-        (setq x `(- x ,ceil-correct-expr)))
+        (setq x `(- x ,ceil-correct-expr))
+        (when (= min-x 0) (setq x `(truly-the (integer 0 ,max-x) ,x))))
       (multiple-value-bind (m shift2)
           (choose-direct-multiplier y max-x)
         (cond
           ((< (* (- max-x max-x-decr) m) n)
-           (add-ceil-extension `(ash (* ,x ,m) ,(- shift2))
-                               div-type min-x))
+           `(ash (* ,x ,m) ,(- shift2)))
           (t
            (multiple-value-setq (m shift2)
              (choose-multiplier y precision))
@@ -243,47 +243,37 @@
                                 (+ (integer-length max-x) (integer-length y) -1))
                                (m (floor (ash 1 shift) y)))
                            (cond ((< (* (1+ (- max-x max-x-decr)) m) n)
-                                  (add-ceil-extension
-                                   `(ash (* (+1 ,x) ,m) ,(- shift))
-                                   div-type min-x))
+                                  `(ash (* (+1 ,x) ,m) ,(- shift)))
                                  (t
                                   (let ((scale
                                          (max 0 (- sb!vm:n-word-bits shift))))
-                                    (add-ceil-extension
-                                     `(ash (%multiply-high
+                                    `(ash (%multiply-high
+                                           (truly-the
+                                            (integer ,min-x ,(max 1 max-x))
                                             ;; Has the same effect as
                                             ;; `(1+ (- X ,CEIL-CORRECT-EXPR))
                                             ;; since CEIL-CORRECT-EXPR is
                                             ;; always 1 or 0.
-                                            (+ x (truly-the (integer 0 1)
-                                                            (logxor 1
-                                                             ,ceil-correct-expr)))
-                                            ,(ash m scale))
-                                           ,(- sb!vm:n-word-bits shift scale))
-                                     div-type min-x))))))
+                                            (+ x (logxor 1 ,ceil-correct-expr)))
+                                           ,(ash m scale))
+                                          ,(- sb!vm:n-word-bits shift scale)))))))
                         (t
                          (flet ((word (x)
                                   `(truly-the word ,x)))
-                           (add-ceil-extension
-                            `(let* ((num ,x)
-                                    (t1 (%multiply-high num ,(- m n))))
-                               (ash ,(word `(+ t1 (ash ,(word `(- num t1))
-                                                       -1)))
-                                    ,(- 1 shift2)))
-                            div-type min-x)))))
+                           `(let* ((num ,x)
+                                   (t1 (%multiply-high num ,(- m n))))
+                              (ash ,(word `(+ t1 (ash ,(word `(- num t1))
+                                                      -1)))
+                                   ,(- 1 shift2)))))))
                  ((and (zerop shift1) (zerop shift2))
                   (let ((max (truncate max-x y)))
-                    (add-ceil-extension
-                     ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
-                     ;; VOP.
-                     `(truly-the (integer 0 ,max)
-                                 (%multiply-high ,x ,m))
-                     div-type min-x)))
+                    ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
+                    ;; VOP.
+                    `(truly-the (integer 0 ,max)
+                                (%multiply-high ,x ,m))))
                  (t
-                  (add-ceil-extension
-                   `(ash (%multiply-high (logandc2 ,x ,(1- (ash 1 shift1))) ,m)
-                         ,(- (+ shift1 shift2)))
-                   div-type min-x)))))))))
+                  `(ash (%multiply-high (logandc2 ,x ,(1- (ash 1 shift1))) ,m)
+                        ,(- (+ shift1 shift2)))))))))))
 
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
@@ -437,11 +427,17 @@
     ;; Division by zero, one or powers of two is handled elsewhere.
     (when (zerop (logand y (1- y)))
       (give-up-ir1-transform))
-    `(let* ((quot
-             ,(gen-unsigned-div-by-constant-expr y min-x max-x 'ceiling))
-            (rem (- x (* quot ,y))))
-       (values quot rem))))
-
+    (let* ((ceil-correct-expr (if (> min-x 0) 1 'ceil-correct))
+           (expr `(let* ((quot
+                          (truly-the (integer 0 ,(truncate max-x y))
+                          ,(gen-unsigned-div-by-constant-expr
+                            y min-x max-x 'ceiling)))
+                         (rem (- (truly-the (integer 0 ,(1- y))
+                                            (- x  (* quot ,y)))
+                                 (* ,y ,ceil-correct-expr))))
+                    (values (+ quot ,ceil-correct-expr) rem))))
+      (if (> min-x 0) expr
+          `(let ((ceil-correct (if (zerop x) 0 1))) ,expr)))))
 
 ;;; Similar to previous truncate transform, but with signed args
 (deftransform truncate ((x y) (sb!vm:signed-word
