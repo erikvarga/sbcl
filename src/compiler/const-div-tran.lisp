@@ -116,15 +116,22 @@
     (unless (and (> y-abs 0) (= y-abs (ash 1 len)))
       (give-up-ir1-transform))
     (let* ((shift (- len))
-           (mask (1- y-abs)))
+           (mask (1- y-abs))
+           (x-type (lvar-type x))
+           (max-x  (or (and (numeric-type-p x-type)
+                            (numeric-type-high x-type)) '*))
+           (min-x  (or (and (numeric-type-p x-type)
+                            (numeric-type-low x-type)) '*))
+           (quot
+            `(ash
+              (truly-the (integer ,min-x ,max-x)
+                         (+ x (if (minusp x) ,(1- y-abs) 0)))
+              ,shift)))
+      (when (minusp y) (setq quot `(- ,quot)))
       `(if (minusp x)
-           (values ,(if (minusp y)
-                        `(ash (- x) ,shift)
-                        `(- (ash (- x) ,shift)))
+           (values ,quot
                    (- (logand (- x) ,mask)))
-           (values ,(if (minusp y)
-                        `(ash (- ,mask x) ,shift)
-                        `(ash x ,shift))
+           (values ,quot
                    (logand x ,mask))))))
 
 ;;; And the same for REM.
