@@ -156,24 +156,9 @@
 
 ;;;; converting division to multiplication, addition, shift, etc.
 
-;;; Get the multiply-high multiplier that can be used instead of
-;;; dividing by y. Used in gen-(un)signed-div-by-constant-expr
-(defun choose-multiplier (y precision)
-  (do* ((l (integer-length (1- y)))
-        (shift l (1- shift))
-        (expt-2-n+l (expt 2 (+ sb!vm:n-word-bits l)))
-        (m-low (truncate expt-2-n+l y) (ash m-low -1))
-        (m-high (truncate (+ expt-2-n+l
-                             (ash expt-2-n+l (- precision)))
-                          y)
-                (ash m-high -1)))
-       ((not (and (< (ash m-low -1) (ash m-high -1))
-                  (> shift 0)))
-        (values m-high shift))))
-
-;;; Get the direct multiplier that can be used instead of
-;;; dividing by y. Used in gen-(un)signed-div-by-constant-expr
-(defun choose-direct-multiplier (y max-x)
+;;; Get the multipy and shift value that can be used instead of
+;;; dividing by y. Used in gen-(un)signed-div-by-constant-expr.
+(defun choose-multiplier (y max-x)
   (let* ((max-shift (+ (integer-length max-x) (integer-length y)))
          (scale (ash 1 max-shift))
          (low (floor scale y))
@@ -182,6 +167,13 @@
          (diff (logxor low high))
          (delta (1- (integer-length diff))))
     (values (ash high (- delta)) (- max-shift delta))))
+
+;;; Get the scaled multiply and shift value that can be used with
+;;; multiply-high. Used in gen-(un)signed-div-by-constant-expr.
+(defun get-scaled-multiplier (m shift)
+  (let ((scale (max 0 (- sb!vm:n-word-bits shift))))
+    (values (* m (ash 1 scale))
+            (+ shift scale (- sb!vm:n-word-bits)))))
 
 ;;; Return an expression to calculate the integer quotient of X and
 ;;; constant Y, using multiplication, shift and add/sub instead of
@@ -195,9 +187,9 @@
 ;;; It is sometimes possible that all intermediate values fit in the
 ;;; word boundary, so there is no need to use multiply-high.  In these
 ;;; cases, use multiplication and shifting directly.
-;;; The algorithm includes an adaptive precision argument.  Use it, since
-;;; we often have sub-word value ranges.  Careful, in this case, we need
-;;; p s.t 2^p > n, not the ceiling of the binary log.
+;;; Use a different algorithm for choosing the multiplier so that we can
+;;; try direct multiplication first.  If multiply-high has to be used,
+;;; the values can simply be scaled up.
 ;;; Also, for some reason, the paper prefers shifting to masking.  Mask
 ;;; instead.  Masking is equivalent to shifting right, then left again;
 ;;; all the intermediate values are still words, so we just have to shift
@@ -215,21 +207,21 @@
              ;; the floor of the binary logarithm of (positive) X
              (integer-length (1- x))))
     (let ((n (expt 2 sb!vm:n-word-bits))
-          (precision (integer-length max-x))
           (shift1 0))
       (multiple-value-bind (m shift2)
-          (choose-direct-multiplier y max-x)
+          (choose-multiplier y max-x)
         (cond
           ((< (* max-x m) n)
            `(ash (* x ,m) ,(- shift2)))
           (t
            (multiple-value-setq (m shift2)
-             (choose-multiplier y precision))
+             (get-scaled-multiplier m shift2))
            (when (and (>= m n) (evenp y))
              (setq shift1 (ld (logand y (- y))))
              (multiple-value-setq (m shift2)
-               (choose-multiplier (/ y (ash 1 shift1))
-                                  (- precision shift1))))
+               (multiple-value-call 'get-scaled-multiplier
+                 (choose-multiplier (/ y (ash 1 shift1))
+                                           (ash max-x (- shift1))))))
            (cond ((>= m n)
                   (cond ((< max-x (1- n))
                          (let* ((shift
@@ -300,10 +292,9 @@
                            (truly-the (integer ,min ,max)
                                       ,expr))))
            expr))
-    (let* ((n (expt 2 (1- sb!vm:n-word-bits)))
-           (precision (max (integer-length min-x) (integer-length max-x))))
+    (let ((n (expt 2 (1- sb!vm:n-word-bits))))
       (multiple-value-bind (m shift)
-          (choose-direct-multiplier (abs y) (max (abs max-x) (abs min-x)))
+          (choose-multiplier (abs y) (max (abs max-x) (abs min-x)))
         (cond
           ((and (< (max (* max-x m) (* min-x m)) n)
                 (>= (min (* max-x m) (* min-x m)) (- n)))
@@ -311,7 +302,7 @@
             `(ash (* num ,m) ,(- shift))))
           (t
            (multiple-value-setq (m shift)
-             (choose-multiplier (abs y) precision))
+             (get-scaled-multiplier m shift))
            (cond ((>= m n)
                   (add-extension
                    `(ash (truly-the
