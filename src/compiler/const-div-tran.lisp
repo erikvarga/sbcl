@@ -193,7 +193,10 @@
 ;;; division. Both arguments must be unsigned, fit in a machine word and
 ;;; Y must neither be zero nor a power of two. The quotient is rounded
 ;;; either towards zero or positive infinity, depending on the value of
-;;; the CEILING-P argument.
+;;; the CEILING-P argument.  In the case of ceiling, the expression must
+;;; be increased by 1 to get the correct value (this is not done in the
+;;; function so that the intermediate value can be used to calculate
+;;; the remainder).
 ;;; The algorithm is taken from the paper "Division by Invariant
 ;;; Integers using Multiplication", 1994 by Torbj\"{o}rn Granlund and
 ;;; Peter L. Montgomery, Figures 4.2 and 6.2, modified to exclude the
@@ -219,13 +222,7 @@
   (aver (not (zerop (logand y (1- y)))))
   (flet ((ld (x)
              ;; the floor of the binary logarithm of (positive) X
-             (integer-length (1- x)))
-         (add-extension (expr)
-           (if ceiling-p
-               ;; the ceiling method works only if X isn't 0
-               ;; so we have to handle that case separately
-               `(if (zerop x) 0 (1+ ,expr))
-               expr)))
+             (integer-length (1- x))))
     (let ((n (expt 2 sb!vm:n-word-bits))
           (shift1 0))
       (multiple-value-bind (m shift2)
@@ -236,9 +233,9 @@
           ((and ceiling-p (> y (ash 1 (1- sb!vm:n-word-bits))))
            ;; the shift value for ceiling is too large if Y is
            ;; above 2^(W-1), so we emit a different code
-          (add-extension 0))
+           0)
           ((< (* max-x m) n)
-           (add-extension `(ash (* x ,m) ,(- shift2))))
+           `(ash (* x ,m) ,(- shift2)))
           (t
            (multiple-value-setq (m shift2)
              (get-scaled-multiplier m shift2))
@@ -264,23 +261,20 @@
                         (t
                          (flet ((word (x)
                                   `(truly-the word ,x)))
-                           (add-extension
-                            `(let* ((num x)
-                                    (t1 (%multiply-high num ,(- m n))))
-                               (ash ,(word `(+ t1 (ash ,(word `(- num t1))
-                                                       -1)))
-                                    ,(- 1 shift2))))))))
+                           `(let* ((num x)
+                                   (t1 (%multiply-high num ,(- m n))))
+                              (ash ,(word `(+ t1 (ash ,(word `(- num t1))
+                                                      -1)))
+                                   ,(- 1 shift2)))))))
                  ((and (zerop shift1) (zerop shift2))
                   (let ((max (truncate max-x y)))
                     ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
                     ;; VOP.
-                    (add-extension
-                     `(truly-the (integer 0 ,max)
-                                 (%multiply-high x ,m)))))
+                    `(truly-the (integer 0 ,max)
+                                (%multiply-high x ,m))))
                  (t
-                  (add-extension
-                   `(ash (%multiply-high (logandc2 x ,(1- (ash 1 shift1))) ,m)
-                         ,(- (+ shift1 shift2))))))))))))
+                  `(ash (%multiply-high (logandc2 x ,(1- (ash 1 shift1))) ,m)
+                        ,(- (+ shift1 shift2)))))))))))
 
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
@@ -421,9 +415,21 @@
     ;; Division by zero, one or powers of two is handled elsewhere.
     (when (zerop (logand y (1- y)))
       (give-up-ir1-transform))
-    `(let* ((quot ,(gen-unsigned-div-by-constant-expr y max-x t))
-            (rem (- x (* quot ,y))))
-       (values quot rem))))
+    `(if (zerop x)
+         ;; the generated expression is only correct when X isn't 0
+         ;; so we have to handle that case separately
+         (values 0 0)
+         (let* ((quot ,(gen-unsigned-div-by-constant-expr y max-x t))
+                (rem (truly-the (integer ,(- 1 y) 0)
+                            (- (truly-the (integer 1 ,y)
+                                          (- x
+                                             (* 
+                                              (truly-the
+                                               (integer 0 ,(1- (ceiling max-x y)))
+                                               quot)
+                                              ,y)))
+                               ,y))))
+           (values (1+ quot) rem)))))
 
 ;;; Similar to previous truncate transform, but with signed args
 (deftransform truncate ((x y) (sb!vm:signed-word
