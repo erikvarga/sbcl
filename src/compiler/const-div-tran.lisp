@@ -303,53 +303,48 @@
            (type sb!vm:signed-word min-x max-x))
   (aver (not (zerop (logand (abs y) (1- (abs y))))))
   (aver (<= min-x max-x))
-  (flet ((add-extension (expr)
-           (setq expr `(- ,expr
-                          (ash num ,(- sb!vm:n-word-bits))))
-           (when (minusp y)
-             (setq expr `(- ,expr)))
-           (let ((max (truncate max-x y))
-                 (min (truncate min-x y)))
-             (when (minusp y) (rotatef min max))
-             (setq expr `(let ((num x))
-                           (truly-the (integer ,min ,max)
-                                      ,expr))))
-           expr))
+  (let ((expr
     (let ((n (expt 2 (1- sb!vm:n-word-bits))))
       (multiple-value-bind (m shift)
           (choose-multiplier (abs y) (max (abs max-x) (abs min-x)))
         (cond
           ((and (< (max (* max-x m) (* min-x m)) n)
                 (>= (min (* max-x m) (* min-x m)) (- n)))
-           (add-extension
-            `(ash (* num ,m) ,(- shift))))
+           `(ash (* num ,m) ,(- shift)))
           (t
            (multiple-value-setq (m shift)
              (get-scaled-multiplier m shift))
            (cond ((>= m n)
-                  (add-extension
-                   `(ash (truly-the
-                          sb!vm:signed-word
-                          (+ num
-                             (%signed-multiply-high num ,(- m (* 2 n)))))
-                         ,(- shift))))
+                  `(ash (truly-the
+                         sb!vm:signed-word
+                         (+ num
+                            (%signed-multiply-high num ,(- m (* 2 n)))))
+                        ,(- shift)))
                  ((zerop shift)
                   ;; Determine the range of the quotient before
-                  ;; ADD-EXTENSION is applied to it
+                  ;; the negation and subtraction is applied to it
                   (let ((max (truncate max-x (abs y)))
                         (min (truncate min-x (abs y))))
                     (if (minusp y)
                         (setq max (1+ max))
                         (setq min (1- min)))
-                    (add-extension
-                      ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
-                      ;; VOP.
-                      `(truly-the (integer ,min ,max)
-                                  (%signed-multiply-high num ,m)))))
+                    ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
+                    ;; VOP.
+                    `(truly-the (integer ,min ,max)
+                                (%signed-multiply-high num ,m))))
                  (t
-                  (add-extension
-                   `(ash (%signed-multiply-high num ,m)
-                         ,(- shift)))))))))))
+                  `(ash (%signed-multiply-high num ,m)
+                        ,(- shift))))))))))
+    (setq expr `(- ,expr
+                   (ash num ,(- sb!vm:n-word-bits))))
+    (when (minusp y)
+      (setq expr `(- ,expr)))
+    (let ((max (truncate max-x y))
+          (min (truncate min-x y)))
+      (when (minusp y) (rotatef min max))
+      (setq expr `(let ((num x))
+                    (truly-the (integer ,min ,max)
+                               ,expr))))))
 
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
@@ -423,7 +418,7 @@
                 (rem (truly-the (integer ,(- 1 y) 0)
                             (- (truly-the (integer 1 ,y)
                                           (- x
-                                             (* 
+                                             (*
                                               (truly-the
                                                (integer 0 ,(1- (ceiling max-x y)))
                                                quot)
