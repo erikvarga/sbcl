@@ -169,7 +169,7 @@
     (values (ash high (- delta)) (- max-shift delta))))
 
 ;; Get the multiply and shift value for ceilinged division by y.
-;; Used in gen-unsigned-div-by-constant-expr.
+;; Used in gen-ceilinged-div-by-constant-expr.
 (defun choose-ceiling-multiplier (y precision)
   (let* ((shift (+ precision (integer-length y)))
          (multiplier (ceiling (* (expt 2 shift)
@@ -192,11 +192,7 @@
 ;;; constant Y, using multiplication, shift and add/sub instead of
 ;;; division. Both arguments must be unsigned, fit in a machine word and
 ;;; Y must neither be zero nor a power of two. The quotient is rounded
-;;; either towards zero or positive infinity, depending on the value of
-;;; the CEILING-P argument.  In the case of ceiling, the expression must
-;;; be increased by 1 to get the correct value (this is not done in the
-;;; function so that the intermediate value can be used to calculate
-;;; the remainder).
+;;; towards zero.
 ;;; The algorithm is taken from the paper "Division by Invariant
 ;;; Integers using Multiplication", 1994 by Torbj\"{o}rn Granlund and
 ;;; Peter L. Montgomery, Figures 4.2 and 6.2, modified to exclude the
@@ -216,7 +212,7 @@
 ;;; described in the paper "N-Bit Unsigned Division Via N-Bit Multiply-Add",
 ;;; 2005 by Arch D. Robison.  Once again, use multiply-high only if
 ;;; multiplication and shifting cannot be done directly.
-(defun gen-unsigned-div-by-constant-expr (y max-x ceiling-p)
+(defun gen-unsigned-div-by-constant-expr (y max-x)
   (declare (type (integer 3 #.most-positive-word) y)
            (type word max-x))
   (aver (not (zerop (logand y (1- y)))))
@@ -226,27 +222,21 @@
     (let ((n (expt 2 sb!vm:n-word-bits))
           (shift1 0))
       (multiple-value-bind (m shift2)
-          (if ceiling-p
-              (choose-ceiling-multiplier y (integer-length max-x))
-              (choose-multiplier y max-x))
+          (choose-multiplier y max-x)
         (cond
-          ((and ceiling-p (> y (ash 1 (1- sb!vm:n-word-bits))))
-           ;; the shift value for ceiling is too large if Y is
-           ;; above 2^(W-1), so we emit a different code
-           `(if (> x ,y) 1 0))
           ((< (* max-x m) n)
            `(ash (* x ,m) ,(- shift2)))
           (t
            (multiple-value-setq (m shift2)
              (get-scaled-multiplier m shift2))
-           (when (and (not ceiling-p) (>= m n) (evenp y))
+           (when (and (>= m n) (evenp y))
              (setq shift1 (ld (logand y (- y))))
              (multiple-value-setq (m shift2)
                (multiple-value-call 'get-scaled-multiplier
                  (choose-multiplier (/ y (ash 1 shift1))
                                            (ash max-x (- shift1))))))
            (cond ((>= m n)
-                  (cond ((and (not ceiling-p) (< max-x (1- n)))
+                  (cond ((< max-x (1- n))
                          (let* ((shift
                                 (+ (integer-length max-x) (integer-length y) -1))
                                (m (floor (ash 1 shift) y)))
@@ -282,10 +272,10 @@
 #+sb-xc-host
 (progn
   (assert (or (/= sb-vm:n-word-bits 32)
-              (equal (gen-unsigned-div-by-constant-expr 10 most-positive-word nil)
+              (equal (gen-unsigned-div-by-constant-expr 10 most-positive-word)
                      '(ash (%multiply-high (logandc2 x 0) 3435973837) -3))))
   (assert (or (/= sb-vm:n-word-bits 32)
-              (equal (gen-unsigned-div-by-constant-expr 7 most-positive-word nil)
+              (equal (gen-unsigned-div-by-constant-expr 7 most-positive-word)
                      '(let* ((num x)
                             (t1 (%multiply-high num 613566757)))
                        (ash
@@ -346,6 +336,41 @@
                     (truly-the (integer ,min ,max)
                                ,expr))))))
 
+(defun gen-ceilinged-div-by-constant-expr (y max-x)
+  (declare (type (integer 3 #.most-positive-word) y)
+           (type word max-x))
+  (aver (not (zerop (logand y (1- y)))))
+  (let ((n (expt 2 sb!vm:n-word-bits)))
+    (multiple-value-bind (m shift)
+        (choose-ceiling-multiplier y (integer-length max-x))
+      (cond
+        ((> y (ash 1 (1- sb!vm:n-word-bits)))
+         ;; the shift value is too large if Y is above
+         ;; 2^(W-1), so we emit a different code
+         `(if (> x ,y) 1 0))
+        ((< (* max-x m) n)
+         `(ash (* x ,m) ,(- shift)))
+        (t
+         (multiple-value-setq (m shift)
+           (get-scaled-multiplier m shift))
+         (cond ((>= m n)
+                (flet ((word (x)
+                         `(truly-the word ,x)))
+                  `(let* ((num x)
+                          (t1 (%multiply-high num ,(- m n))))
+                     (ash ,(word `(+ t1 (ash ,(word `(- num t1))
+                                             -1)))
+                          ,(- 1 shift)))))
+               ((zerop shift)
+                (let ((max (truncate max-x y)))
+                  ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
+                  ;; VOP.
+                  `(truly-the (integer 0 ,max)
+                              (%multiply-high x ,m))))
+               (t
+                `(ash (%multiply-high x ,m)
+                      ,(- shift)))))))))
+
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
 ;;; function, under a word size of 32 bits:
@@ -391,7 +416,7 @@
     ;; Division by zero, one or powers of two is handled elsewhere.
     (when (zerop (logand y (1- y)))
       (give-up-ir1-transform))
-    `(let* ((quot ,(gen-unsigned-div-by-constant-expr y max-x nil))
+    `(let* ((quot ,(gen-unsigned-div-by-constant-expr y max-x))
             (rem (ldb (byte #.sb!vm:n-word-bits 0)
                       (- x (* quot ,y)))))
        (values quot rem))))
@@ -414,7 +439,7 @@
          ;; the generated expression is only correct when X isn't 0
          ;; so we have to handle that case separately
          (values 0 0)
-         (let* ((quot ,(gen-unsigned-div-by-constant-expr y max-x t))
+         (let* ((quot ,(gen-ceilinged-div-by-constant-expr y max-x))
                 (rem (truly-the (integer ,(- 1 y) 0)
                             (- (truly-the (integer 1 ,y)
                                           (- x
