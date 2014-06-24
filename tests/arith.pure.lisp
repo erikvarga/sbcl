@@ -491,6 +491,10 @@
             (dolist (dividend `(0 1 -1
                                 ,most-positive-fixnum
                                 ,most-negative-fixnum
+                                ,(1- (expt 2 sb-vm:n-word-bits))
+                                ,(- (expt 2 sb-vm:n-word-bits) 2)
+                                ,(1- (expt 2 31))
+                                ,(- 1 (expt 2 31))
                                 ,(1- divisor) ,divisor
                                 ,(1- (* divisor 2)) ,(* divisor 2)
                                 ,@(loop repeat 4

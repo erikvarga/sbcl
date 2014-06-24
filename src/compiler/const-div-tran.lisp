@@ -233,7 +233,7 @@
           ((and ceiling-p (> y (ash 1 (1- sb!vm:n-word-bits))))
            ;; the shift value for ceiling is too large if Y is
            ;; above 2^(W-1), so we emit a different code
-           0)
+           `(if (> x ,y) 1 0))
           ((< (* max-x m) n)
            `(ash (* x ,m) ,(- shift2)))
           (t
