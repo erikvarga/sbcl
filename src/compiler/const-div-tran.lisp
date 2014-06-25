@@ -170,16 +170,29 @@
 
 ;; Get the multiply and shift value for ceilinged division by y.
 ;; Used in gen-ceilinged-div-by-constant-expr.
-(defun choose-ceiling-multiplier (y precision)
-  (let* ((shift (+ precision (integer-length y)))
-         (multiplier (ceiling (* (expt 2 shift)
-                        (/ (1- (expt 2 precision))
-                           (* y (expt 2 precision))))))
-         (scale (min shift
-                     (integer-length
-                      (1- (logand multiplier (- multiplier)))))))
-    (values (ash multiplier (- scale))
-            (- shift scale))))
+(defun choose-ceiling-multiplier (y precision negative-p)
+  (flet ((scale-down (multiplier shift)
+           (let ((scale (min shift
+                             (integer-length
+                              (1- (logand multiplier (- multiplier)))))))
+             (values (ash multiplier (- scale))
+                      (- shift scale)))))
+    (let* ((shift (+ precision (integer-length y)))
+           (mul-low (if negative-p (ceiling (expt 2 shift) y)
+                        (ceiling (* (expt 2 shift)
+                                    (/ (1- (expt 2 precision))
+                                       (* y (expt 2 precision)))))))
+           (mul-high (if negative-p (ceiling (1- (* (expt 2 shift)
+                                                 (/ (1+ (expt 2 precision))
+                                                    (* y (expt 2 precision))))))
+                        (ceiling (1- (/ (expt 2 shift) y)))))
+           (shift-low shift)
+           (shift-high shift))
+      (multiple-value-setq (mul-low shift-low) (scale-down mul-low shift-low))
+      (multiple-value-setq (mul-high shift-high) (scale-down mul-high shift-high))
+      (if (< mul-low mul-high)
+          (values mul-low shift-low)
+          (values mul-high shift-high)))))
 
 ;;; Get the scaled multiply and shift value that can be used with
 ;;; multiply-high. Used in gen-(un)signed-div-by-constant-expr.
@@ -336,40 +349,80 @@
                     (truly-the (integer ,min ,max)
                                ,expr))))))
 
-(defun gen-ceilinged-div-by-constant-expr (y max-x)
-  (declare (type (integer 3 #.most-positive-word) y)
-           (type word max-x))
+(defun gen-ceilinged-div-by-constant-expr (y min-x max-x)
+  (declare (type (or (integer #.(- (expt 2 (1- sb!vm:n-word-bits))) -3)
+                     (integer 3 #.most-positive-word)) y)
+           (type (or sb!vm:signed-word word) min-x max-x))
+  (aver (<= min-x max-x))
   (aver (not (zerop (logand y (1- y)))))
-  (let ((n (expt 2 sb!vm:n-word-bits)))
-    (multiple-value-bind (m shift)
-        (choose-ceiling-multiplier y (integer-length max-x))
+  (let* ((signed-p (or (minusp min-x) (minusp y)))
+         (n-min (if signed-p (- (expt 2 (1- sb!vm:n-word-bits))) 0))
+         (n-max (expt 2 (- sb!vm:n-word-bits (if signed-p 1 0))))
+         (precision (integer-length (1- (max (abs min-x) (abs max-x)))))
+         (mulhi (if signed-p '%signed-multiply-high '%multiply-high))
+         (positive-product-p (if (plusp y) '(plusp x) '(minusp x)))
+         (neg-m) (pos-m) (neg-shift) (pos-shift))
+    (multiple-value-setq (neg-m neg-shift)
+      (choose-ceiling-multiplier (abs y) precision t))
+    (multiple-value-setq (pos-m pos-shift)
+      (choose-ceiling-multiplier (abs y) precision nil))
+    (when (and (>= (* y min-x) 0) (>= (* y max-x) 0))
+      (setq neg-m pos-m)
+      (setq neg-shift pos-shift))
+    (when (and (<= (* y min-x) 0) (<= (* y max-x) 0))
+      (setq pos-m neg-m)
+      (setq pos-shift neg-shift))
+    (let* ((shift `(if ,positive-product-p ,(- pos-shift) ,(- neg-shift)))
+           (m `(if ,positive-product-p
+                   ,(* (signum y) pos-m)
+                   ,(* (signum y) neg-m))))
       (cond
-        ((> y (ash 1 (1- sb!vm:n-word-bits)))
+        ((> (abs y) n-max)
          ;; the shift value is too large if Y is above
          ;; 2^(W-1), so we emit a different code
-         `(if (> x ,y) 1 0))
-        ((< (* max-x m) n)
-         `(ash (* x ,m) ,(- shift)))
+         (if (plusp y)
+             `(cond ((> x ,y) 1)
+                    ((>= x 0) 0)
+                    ((> x ,(- y)) -1)
+                    (t -2))
+             `(cond ((< x ,y) 1)
+                    ((<= x 0) 0)
+                    ((< x ,(- y)) -1)
+                    (t -2))))
+        ((and (< (* max-x (max pos-m neg-m)) n-max)
+              (>= (* min-x (max pos-m neg-m)) n-min))
+         `(ash (* x ,m) ,shift))
         (t
-         (multiple-value-setq (m shift)
-           (get-scaled-multiplier m shift))
-         (cond ((>= m n)
-                (flet ((word (x)
-                         `(truly-the word ,x)))
-                  `(let* ((num x)
-                          (t1 (%multiply-high num ,(- m n))))
-                     (ash ,(word `(+ t1 (ash ,(word `(- num t1))
-                                             -1)))
-                          ,(- 1 shift)))))
-               ((zerop shift)
-                (let ((max (truncate max-x y)))
+         (multiple-value-setq (pos-m pos-shift)
+           (get-scaled-multiplier pos-m pos-shift))
+         (multiple-value-setq (neg-m neg-shift)
+           (get-scaled-multiplier neg-m neg-shift))
+         (setq shift `(if ,positive-product-p ,(- pos-shift) ,(- neg-shift))
+                     m `(if ,positive-product-p
+                            ,(* (signum y) pos-m)
+                            ,(* (signum y) neg-m)))
+         (cond ((or (>= (max pos-m neg-m) n-max)
+                    (< (min pos-m neg-m) n-min))
+                (if signed-p
+                    nil
+                    (flet ((word (x)
+                             `(truly-the word ,x)))
+                      `(let* ((num x)
+                              (t1 (,mulhi num ,(- pos-m n-max))))
+                         (ash ,(word `(+ t1 (ash ,(word `(- num t1))
+                                                 -1)))
+                              ,(- 1 pos-shift))))))
+               ((and (zerop pos-shift) (zerop neg-shift))
+                (let ((max (1- (ceiling max-x y)))
+                      (min (1- (ceiling min-x y))))
+                  (when (minusp y) (rotatef min max))
                   ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
                   ;; VOP.
                   `(truly-the (integer 0 ,max)
-                              (%multiply-high x ,m))))
+                              (,mulhi x ,m))))
                (t
-                `(ash (%multiply-high x ,m)
-                      ,(- shift)))))))))
+                `(ash (,mulhi x ,m)
+                      ,shift))))))))
 
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
@@ -439,7 +492,7 @@
          ;; the generated expression is only correct when X isn't 0
          ;; so we have to handle that case separately
          (values 0 0)
-         (let* ((quot ,(gen-ceilinged-div-by-constant-expr y max-x))
+         (let* ((quot ,(gen-ceilinged-div-by-constant-expr y 0 max-x))
                 (rem (truly-the (integer ,(- 1 y) 0)
                             (- (truly-the (integer 1 ,y)
                                           (- x
@@ -473,3 +526,32 @@
             (rem (truly-the (integer ,(- 1 (abs y)) ,(- (abs y) 1))
                             (- x (* quot ,y)))))
        (values quot rem))))
+
+;; Ceiling with signed args
+(deftransform ceiling ((x y) (sb!vm:signed-word
+                               (constant-arg sb!vm:signed-word))
+                        *
+                        :policy (and (> speed compilation-speed)
+                                     (> speed space)))
+  "convert signed integer division to multiplication"
+  (let* ((y      (lvar-value y))
+         (x-type (lvar-type x))
+         (max-x  (or (and (numeric-type-p x-type)
+                          (numeric-type-high x-type))
+                     (- (expt 2 (1- sb!vm:n-word-bits)) 1)))
+         (min-x  (or (and (numeric-type-p x-type)
+                          (numeric-type-low x-type))
+                     (- (expt 2 (1- sb!vm:n-word-bits))))))
+    ;; Division by zero, one or powers of two is handled elsewhere.
+    (when (zerop (logand (abs y) (1- (abs y))))
+      (give-up-ir1-transform))
+    (let ((quot-expr (gen-ceilinged-div-by-constant-expr y min-x max-x)))
+      (unless quot-expr (give-up-ir1-transform))
+      `(if (zerop x)
+           ;; the generated expression is only correct when X isn't 0
+           ;; so we have to handle that case separately
+           (values 0 0)
+           (let* ((quot (1+ ,quot-expr))
+                   (rem (truly-the (integer ,(- 1 (abs y)) ,(- (abs y) 1))
+                                   (- x (* quot ,y)))))
+              (values quot rem))))))
