@@ -375,54 +375,56 @@
     (let* ((shift `(if ,positive-product-p ,(- pos-shift) ,(- neg-shift)))
            (m `(if ,positive-product-p
                    ,(* (signum y) pos-m)
-                   ,(* (signum y) neg-m))))
-      (cond
-        ((> (abs y) n-max)
-         ;; the shift value is too large if Y is above
-         ;; 2^(W-1), so we emit a different code
-         (if (plusp y)
-             `(cond ((> x ,y) 1)
-                    ((>= x 0) 0)
-                    ((> x ,(- y)) -1)
-                    (t -2))
-             `(cond ((< x ,y) 1)
-                    ((<= x 0) 0)
-                    ((< x ,(- y)) -1)
-                    (t -2))))
-        ((and (< (* max-x (max pos-m neg-m)) n-max)
-              (>= (* min-x (max pos-m neg-m)) n-min))
-         `(ash (* x ,m) ,shift))
-        (t
-         (multiple-value-setq (pos-m pos-shift)
-           (get-scaled-multiplier pos-m pos-shift))
-         (multiple-value-setq (neg-m neg-shift)
-           (get-scaled-multiplier neg-m neg-shift))
-         (setq shift `(if ,positive-product-p ,(- pos-shift) ,(- neg-shift))
+                   ,(* (signum y) neg-m)))
+           (expr
+            (cond
+              ((> (abs y) n-max)
+               ;; the shift value is too large if Y is above
+               ;; 2^(W-1), so we emit a different code
+               (if (plusp y)
+                   `(cond ((> x ,y) 1)
+                          ((>= x 0) 0)
+                          ((> x ,(- y)) -1)
+                          (t -2))
+                   `(cond ((< x ,y) 1)
+                          ((<= x 0) 0)
+                          ((< x ,(- y)) -1)
+                          (t -2))))
+              ((and (< (* max-x (max pos-m neg-m)) n-max)
+                    (>= (* min-x (max pos-m neg-m)) n-min))
+               `(ash (* x ,m) ,shift))
+              (t
+               (multiple-value-setq (pos-m pos-shift)
+                 (get-scaled-multiplier pos-m pos-shift))
+               (multiple-value-setq (neg-m neg-shift)
+                 (get-scaled-multiplier neg-m neg-shift))
+               (setq shift `(if ,positive-product-p ,(- pos-shift) ,(- neg-shift))
                      m `(if ,positive-product-p
                             ,(* (signum y) pos-m)
                             ,(* (signum y) neg-m)))
-         (cond ((or (>= (max pos-m neg-m) n-max)
-                    (< (min pos-m neg-m) n-min))
-                (if signed-p
-                    nil
-                    (flet ((word (x)
-                             `(truly-the word ,x)))
-                      `(let* ((num x)
-                              (t1 (,mulhi num ,(- pos-m n-max))))
-                         (ash ,(word `(+ t1 (ash ,(word `(- num t1))
-                                                 -1)))
-                              ,(- 1 pos-shift))))))
-               ((and (zerop pos-shift) (zerop neg-shift))
-                (let ((max (1- (ceiling max-x y)))
-                      (min (1- (ceiling min-x y))))
-                  (when (minusp y) (rotatef min max))
-                  ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
-                  ;; VOP.
-                  `(truly-the (integer 0 ,max)
-                              (,mulhi x ,m))))
-               (t
-                `(ash (,mulhi x ,m)
-                      ,shift))))))))
+               (cond ((or (>= (max pos-m neg-m) n-max)
+                          (< (min pos-m neg-m) n-min))
+                      (if signed-p
+                          nil
+                          (flet ((word (x)
+                                   `(truly-the word ,x)))
+                            `(let* ((num x)
+                                    (t1 (,mulhi num ,(- pos-m n-max))))
+                               (ash ,(word `(+ t1 (ash ,(word `(- num t1))
+                                                       -1)))
+                                    ,(- 1 pos-shift))))))
+                     ((and (zerop pos-shift) (zerop neg-shift))
+                      `(,mulhi x ,m))
+                     (t
+                      `(ash (,mulhi x ,m)
+                            ,shift)))))))
+      (if expr
+          (let ((max (1- (ceiling max-x y)))
+                (min (1- (ceiling min-x y))))
+            (when (minusp y) (rotatef min max))
+            `(truly-the (integer ,min ,max)
+                        ,expr))
+          nil))))
 
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
@@ -545,13 +547,35 @@
     ;; Division by zero, one or powers of two is handled elsewhere.
     (when (zerop (logand (abs y) (1- (abs y))))
       (give-up-ir1-transform))
-    (let ((quot-expr (gen-ceilinged-div-by-constant-expr y min-x max-x)))
+    ;; Use the unsigned transform if we can since it has a
+    ;; simpler remainder calculation
+    (when (and (>= min-x 0) (<= max-x most-positive-word)
+               (typep y 'word))
+      (give-up-ir1-transform))
+    (let ((quot-expr (gen-ceilinged-div-by-constant-expr y min-x max-x))
+          (positive-p (if (plusp y) '(plusp x) '(minusp x)))
+          (quot-min (ceiling min-x y))
+          (quot-max (ceiling max-x y)))
       (unless quot-expr (give-up-ir1-transform))
+      (when (minusp y) (rotatef quot-min quot-max))
+      (when (plusp quot-min) (decf quot-min))
+      (when (plusp quot-max) (decf quot-max))
       `(if (zerop x)
            ;; the generated expression is only correct when X isn't 0
            ;; so we have to handle that case separately
            (values 0 0)
-           (let* ((quot (1+ ,quot-expr))
-                   (rem (truly-the (integer ,(- 1 (abs y)) ,(- (abs y) 1))
-                                   (- x (* quot ,y)))))
-              (values quot rem))))))
+           (let ((quot ,quot-expr))
+             (unless ,positive-p (incf quot))
+             (let ((rem (truly-the (integer ,(if (plusp y) (- 1 y) y)
+                                            ,(if (plusp y) y (- -1 y)))
+                                   (- x
+                                      (* (truly-the (integer ,quot-min ,quot-max)
+                                                    quot)
+                                         ,y)))))
+               (if ,positive-p
+                   (values (1+ quot)
+                           (truly-the (integer
+                                       ,(if (plusp y) (- 1 y) 0)
+                                       ,(if (plusp y) 0 (- -1 y)))
+                                      (- rem ,y)))
+                   (values quot rem))))))))
