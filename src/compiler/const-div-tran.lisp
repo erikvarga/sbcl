@@ -283,23 +283,20 @@
 ;;; with respect to the complexity of the generated expression of the previous,
 ;;; function, under a word size of 32 bits:
 #+sb-xc-host
-(progn
-  (assert (or (/= sb-vm:n-word-bits 32)
-              (equal (gen-unsigned-div-by-constant-expr 10 most-positive-word)
-                     '(ash (%multiply-high (logandc2 x 0) 3435973837) -3))))
-  (assert (or (/= sb-vm:n-word-bits 32)
-              (equal (gen-unsigned-div-by-constant-expr 7 most-positive-word)
-                     '(let* ((num x)
-                            (t1 (%multiply-high num 613566757)))
-                       (ash
-                        (truly-the word
-                                   (+ t1 (ash (truly-the word (- num t1)) -1)))
-                        -2))))))
+(when (= sb!vm:n-word-bits 32)
+  (assert (equal (gen-unsigned-div-by-constant-expr 10 most-positive-word)
+                 '(ash (%multiply-high (logandc2 x 0) 3435973837) -3)))
+  (assert (equal (gen-unsigned-div-by-constant-expr 7 most-positive-word)
+                  '(let* ((num x)
+                          (t1 (%multiply-high num 613566757)))
+                    (ash
+                     (truly-the word
+                      (+ t1 (ash (truly-the word (- num t1)) -1)))
+                     -2)))))
 
 ;;; Return an expression for calculating the quotient like in the previous
 ;;; function, but the arguments have to fit in signed words.
 ;;; The algorithm is taken from the same paper, Figure 5.2
-
 (defun gen-signed-div-by-constant-expr (y min-x max-x)
   (declare (type (or (integer #.(- (expt 2 (1- sb!vm:n-word-bits))) -3)
                      (integer 3 #.(expt 2 (1- sb!vm:n-word-bits)))) y)
@@ -349,6 +346,47 @@
                     (truly-the (integer ,min ,max)
                                ,expr))))))
 
+;;; The following two asserts show the expected average case and worst case
+;;; with respect to the complexity of the generated expression of the previous,
+;;; function, under a word size of 32 bits:
+#+sb-xc-host
+(when (= sb!vm:n-word-bits 32)
+  (assert (equal
+           (gen-signed-div-by-constant-expr 11
+                                            (- (expt 2 (1- sb!vm:n-word-bits)))
+                                            (1- (expt 2 (1- sb!vm:n-word-bits))))
+           '(let ((num x))
+             (truly-the (integer -195225786 195225786)
+              (- (ash (%signed-multiply-high num 780903145) -1)
+               (ash num -32))))))
+  (assert (equal
+           (gen-signed-div-by-constant-expr 7
+                                            (- (expt 2 (1- sb!vm:n-word-bits)))
+                                            (1- (expt 2 (1- sb!vm:n-word-bits))))
+           '(let ((num x))
+             (truly-the (integer -306783378 306783378)
+              (- (ash
+                  (truly-the sb!vm:signed-word
+                             (+ num (%signed-multiply-high num -1840700269)))
+                  -2)
+               (ash num -32)))))))
+
+;;; Return an expression for calculating the quotient like in the previous
+;;; function, but the quotient is rounded towards positive infinity. The
+;;; arguments can be either signed or unsigned words.
+;;; The expression (CEILING X Y) is converted into and expression of the
+;;; form (1+ (ASH (* X M) S)), where Y M and S are constants. Like in the
+;;; previous functions, %MULTIPLY-HIGH is used when the intermediate values
+;;; don't fit in a word.
+;;; For signed words, the multiplier must be slightly larger when X is
+;;; negative to produce the correct value, so a different multiplier is
+;;; used depending on the sign of X.
+;;; The 1+ at the end is not added to the expression because the intermediate
+;;; value can be used to calculate the remainder efficiently. To get the
+;;; correct quotient, the 1+ has to be added after calling the function.
+;;; It is possible that the function has to use an N+1 bit multiplier that
+;;; doesn't fit in a word. When the args are unsigned words, this is handled
+;;; as in the truncate code generator. Otherwise, the function returns NIL.
 (defun gen-ceilinged-div-by-constant-expr (y min-x max-x)
   (declare (type (or (integer #.(- (expt 2 (1- sb!vm:n-word-bits))) -3)
                      (integer 3 #.most-positive-word)) y)
@@ -428,30 +466,50 @@
 
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
-;;; function, under a word size of 32 bits:
+;;; function for both signed and unsigned words, under a word size of 32 bits:
 #+sb-xc-host
-(progn
-  (assert (or (/= sb!vm:n-word-bits 32)
-              (equal
-               (gen-signed-div-by-constant-expr 11
+(when (= sb!vm:n-word-bits 32)
+  ;; for unsigned args:
+  (assert (equal
+           (gen-ceilinged-div-by-constant-expr 7 0
+                                               (1- (expt 2 sb!vm:n-word-bits)))
+           '(truly-the (integer -1 613566756)
+             (ash
+              (%multiply-high x
+               ;; The unnecessary condition checking is
+               ;; removed at compile-time
+               (if (plusp x)
+                   1227133513
+                   1227133513))
+              (if (plusp x)
+                  -1
+                  -1)))))
+  (assert (equal
+           (gen-ceilinged-div-by-constant-expr 11 0
+                                               (1- (expt 2 sb!vm:n-word-bits)))
+           '(truly-the (integer -1 390451572)
+             (let* ((num x) (t1 (%multiply-high num 1952257861)))
+               (ash (truly-the word (+ t1 (ash (truly-the word (- num t1)) -1)))
+                    -3)))))
+;; for unsigned args:
+  (assert (equal
+           (gen-ceilinged-div-by-constant-expr 5
                                      (- (expt 2 (1- sb!vm:n-word-bits)))
                                      (1- (expt 2 (1- sb!vm:n-word-bits))))
-               '(let ((num x))
-                 (truly-the (integer -195225786 195225786)
-                            (- (ash (%signed-multiply-high num 780903145) -1)
-                               (ash num -32)))))))
-  (assert (or (/= sb!vm:n-word-bits 32)
-              (equal
-               (gen-signed-div-by-constant-expr 7
+           '(truly-the (integer -429496730 429496729)
+           (ash
+            (%signed-multiply-high x
+                                   (if (plusp x)
+                                       858993459
+                                       1717986919))
+            (if (plusp x)
+                0
+                -1)))))
+  (assert (equal
+           (gen-ceilinged-div-by-constant-expr 7
                                      (- (expt 2 (1- sb!vm:n-word-bits)))
                                      (1- (expt 2 (1- sb!vm:n-word-bits))))
-               '(let ((num x))
-                 (truly-the (integer -306783378 306783378)
-                  (- (ash
-                      (truly-the sb!vm:signed-word
-                                 (+ num (%signed-multiply-high num -1840700269)))
-                      -2)
-                   (ash num -32))))))))
+           nil)))
 
 ;;; If the divisor is constant and both args are positive and fit in a
 ;;; machine word, replace the division by a multiplication and possibly
@@ -476,7 +534,9 @@
                       (- x (* quot ,y)))))
        (values quot rem))))
 
-;;; Similar code for ceilinged division
+;;; Similar code for ceilinged division.
+;;; Calculate the remainder with X-(Q-1)*Y-Y instead of X-Q*Y so
+;;; that the values never overflow.
 (deftransform ceiling ((x y) (word (constant-arg word))
                         *
                         :policy (and (> speed compilation-speed)
@@ -506,7 +566,7 @@
                                ,y))))
            (values (1+ quot) rem)))))
 
-;;; Similar to previous truncate transform, but with signed args
+;;; Similar to previous truncate transform, but with signed args.
 (deftransform truncate ((x y) (sb!vm:signed-word
                                (constant-arg sb!vm:signed-word))
                         *
@@ -529,7 +589,10 @@
                             (- x (* quot ,y)))))
        (values quot rem))))
 
-;; Ceiling with signed args
+;;; Ceiling with signed args.
+;;; Calculate the remainder either normally or as in the unsigned
+;;; transform, depending on the sign of X. (Both methods may result
+;;; in an overflow in the other case.)
 (deftransform ceiling ((x y) (sb!vm:signed-word
                                (constant-arg sb!vm:signed-word))
                         *
