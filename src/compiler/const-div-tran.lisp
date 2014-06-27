@@ -168,31 +168,46 @@
          (delta (1- (integer-length diff))))
     (values (ash high (- delta)) (- max-shift delta))))
 
-;; Get the multiply and shift value for ceilinged division by y.
-;; Used in gen-ceilinged-div-by-constant-expr.
-(defun choose-ceiling-multiplier (y precision negative-p)
-  (flet ((scale-down (multiplier shift)
-           (let ((scale (min shift
-                             (integer-length
-                              (1- (logand multiplier (- multiplier)))))))
-             (values (ash multiplier (- scale))
-                      (- shift scale)))))
-    (let* ((shift (+ precision (integer-length y)))
-           (mul-low (if negative-p (ceiling (expt 2 shift) y)
-                        (ceiling (* (expt 2 shift)
-                                    (/ (1- (expt 2 precision))
-                                       (* y (expt 2 precision)))))))
-           (mul-high (if negative-p (ceiling (1- (* (expt 2 shift)
-                                                 (/ (1+ (expt 2 precision))
-                                                    (* y (expt 2 precision))))))
-                        (ceiling (1- (/ (expt 2 shift) y)))))
-           (shift-low shift)
-           (shift-high shift))
-      (multiple-value-setq (mul-low shift-low) (scale-down mul-low shift-low))
-      (multiple-value-setq (mul-high shift-high) (scale-down mul-high shift-high))
-      (if (< mul-low mul-high)
-          (values mul-low shift-low)
-          (values mul-high shift-high)))))
+;; Get the multiply and shift value for ceilinged and floored
+;; division by y. Used in gen-ceilinged/floored-div-by-constant-expr.
+(flet ((scale-down (multiplier shift)
+         (let ((scale (min shift
+                           (integer-length
+                            (1- (logand multiplier
+                                        (- multiplier)))))))
+           (values (ash multiplier (- scale))
+                   (- shift scale)))))
+  (macrolet ((choose (neg-low neg-high pos-low pos-high)
+               `(let* ((shift (+ precision (integer-length y)))
+                       (mul-low (if negative-p ,neg-low ,pos-low))
+                       (mul-high (if negative-p ,neg-high ,pos-high))
+                       (shift-low shift)
+                       (shift-high shift))
+                  (multiple-value-setq (mul-low shift-low)
+                    (scale-down mul-low shift-low))
+                  (multiple-value-setq (mul-high shift-high)
+                    (scale-down mul-high shift-high))
+                  (if (< mul-low mul-high)
+                      (values mul-low shift-low)
+                      (values mul-high shift-high)))))
+    (defun choose-ceiling-multiplier (y precision negative-p)
+      (choose (ceiling (expt 2 shift) y)
+              (ceiling (1- (* (expt 2 shift)
+                              (/ (1+ (expt 2 precision))
+                                 (* y (expt 2 precision))))))
+              (ceiling (* (expt 2 shift)
+                          (/ (1- (expt 2 precision))
+                             (* y (expt 2 precision)))))
+              (ceiling (1- (/ (expt 2 shift) y)))))
+    (defun choose-floor-multiplier (y precision negative-p)
+      (choose (ceiling (* (expt 2 shift)
+                          (/ (1- (expt 2 precision))
+                             (* y (expt 2 precision)))))
+              (ceiling (1- (/ (expt 2 shift) y)))
+              (ceiling (expt 2 shift) y)
+              (ceiling (1- (* (expt 2 shift)
+                              (/ (1+ (expt 2 precision))
+                                 (* y (expt 2 precision))))))))))
 
 ;;; Get the scaled multiply and shift value that can be used with
 ;;; multiply-high. Used in gen-(un)signed-div-by-constant-expr.
@@ -372,22 +387,23 @@
                (ash num -32)))))))
 
 ;;; Return an expression for calculating the quotient like in the previous
-;;; function, but the quotient is rounded towards positive infinity. The
-;;; arguments can be either signed or unsigned words.
+;;; function, but the quotient is rounded towards positive or negative infinity.
+;;; The arguments can be either signed or unsigned words.
 ;;; The expression (CEILING X Y) is converted into and expression of the
-;;; form (1+ (ASH (* X M) S)), where Y M and S are constants. Like in the
-;;; previous functions, %MULTIPLY-HIGH is used when the intermediate values
-;;; don't fit in a word.
-;;; For signed words, the multiplier must be slightly larger when X is
+;;; form (1+ (ASH (* X M) S)), and (FLOOR X Y) is converted into (ASH (* X M) S),
+;;; where Y M and S are constants. Like in the previous functions,
+;;; %MULTIPLY-HIGH is used when the intermediate values don't fit in a word.
+;;; For signed words, the multiplier must be slightly changed when X is
 ;;; negative to produce the correct value, so a different multiplier is
 ;;; used depending on the sign of X.
-;;; The 1+ at the end is not added to the expression because the intermediate
-;;; value can be used to calculate the remainder efficiently. To get the
-;;; correct quotient, the 1+ has to be added after calling the function.
+;;; The 1+ at the end of ceiling is not added to the expression because the
+;;; intermediate value can be used to calculate the remainder efficiently.
+;;; To get the correct quotient, the 1+ has to be added after calling the
+;;; function.
 ;;; It is possible that the function has to use an N+1 bit multiplier that
 ;;; doesn't fit in a word. When the args are unsigned words, this is handled
 ;;; as in the truncate code generator. Otherwise, the function returns NIL.
-(defun gen-ceilinged-div-by-constant-expr (y min-x max-x)
+(flet ((gen (y min-x max-x choose-multiplier-fun large-y-expr min-quot max-quot)
   (declare (type (or (integer #.(- (expt 2 (1- sb!vm:n-word-bits))) -3)
                      (integer 3 #.most-positive-word)) y)
            (type (or sb!vm:signed-word word) min-x max-x))
@@ -401,9 +417,9 @@
          (positive-product-p (if (plusp y) '(plusp x) '(minusp x)))
          (neg-m) (pos-m) (neg-shift) (pos-shift))
     (multiple-value-setq (neg-m neg-shift)
-      (choose-ceiling-multiplier (abs y) precision t))
+      (funcall choose-multiplier-fun (abs y) precision t))
     (multiple-value-setq (pos-m pos-shift)
-      (choose-ceiling-multiplier (abs y) precision nil))
+      (funcall choose-multiplier-fun (abs y) precision nil))
     (when (and (>= (* y min-x) 0) (>= (* y max-x) 0))
       (setq neg-m pos-m)
       (setq neg-shift pos-shift))
@@ -419,15 +435,7 @@
               ((> (abs y) n-max)
                ;; the shift value is too large if Y is above
                ;; 2^(W-1), so we emit a different code
-               (if (plusp y)
-                   `(cond ((> x ,y) 1)
-                          ((>= x 0) 0)
-                          ((> x ,(- y)) -1)
-                          (t -2))
-                   `(cond ((< x ,y) 1)
-                          ((<= x 0) 0)
-                          ((< x ,(- y)) -1)
-                          (t -2))))
+               large-y-expr)
               ((and (< (* max-x (max pos-m neg-m)) n-max)
                     (>= (* min-x (max pos-m neg-m)) n-min))
                `(ash (* x ,m) ,shift))
@@ -457,19 +465,46 @@
                       `(ash (,mulhi x ,m)
                             ,shift)))))))
       (if expr
-          (let ((max (1- (ceiling max-x y)))
-                (min (1- (ceiling min-x y))))
-            (when (minusp y) (rotatef min max))
-            `(truly-the (integer ,min ,max)
-                        ,expr))
-          nil))))
+          `(truly-the (integer ,min-quot ,max-quot)
+                      ,expr)
+          nil)))))
+  (defun gen-ceilinged-div-by-constant-expr (y min-x max-x)
+    (let ((min (1- (ceiling min-x y)))
+          (max (1- (ceiling max-x y))))
+      (when (minusp y) (rotatef min max))
+      (gen y min-x max-x 'choose-ceiling-multiplier
+           (if (plusp y)
+               `(cond ((> x ,y) 1)
+                      ((>= x 0) 0)
+                      ((> x ,(- y)) -1)
+                      (t -2))
+               `(cond ((< x ,y) 1)
+                      ((<= x 0) 0)
+                      ((< x ,(- y)) -1)
+                      (t -2)))
+         min max)))
+  (defun gen-floored-div-by-constant-expr (y min-x max-x)
+    (let ((min (floor min-x y))
+          (max (floor max-x y)))
+      (when (minusp y) (rotatef min max))
+      (gen y min-x max-x 'choose-floor-multiplier
+           (if (plusp y)
+               `(cond ((>= x ,y) 1)
+                      ((>= x 0) 0)
+                      ((>= x ,(- y)) -1)
+                      (t -2))
+               `(cond ((<= x ,y) 1)
+                      ((<= x 0) 0)
+                      ((<= x ,(- y)) -1)
+                      (t -2)))
+         min max))))
 
-;;; The following two asserts show the expected average case and worst case
+;;; The following asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
 ;;; function for both signed and unsigned words, under a word size of 32 bits:
 #+sb-xc-host
 (when (= sb!vm:n-word-bits 32)
-  ;; for unsigned args:
+  ;; unsigned ceiling:
   (assert (equal
            (gen-ceilinged-div-by-constant-expr 7 0
                                                (1- (expt 2 sb!vm:n-word-bits)))
@@ -491,22 +526,63 @@
              (let* ((num x) (t1 (%multiply-high num 1952257861)))
                (ash (truly-the word (+ t1 (ash (truly-the word (- num t1)) -1)))
                     -3)))))
-;; for unsigned args:
+  ;; signed ceiling:
   (assert (equal
            (gen-ceilinged-div-by-constant-expr 5
                                      (- (expt 2 (1- sb!vm:n-word-bits)))
                                      (1- (expt 2 (1- sb!vm:n-word-bits))))
            '(truly-the (integer -429496730 429496729)
-           (ash
-            (%signed-multiply-high x
-                                   (if (plusp x)
-                                       858993459
-                                       1717986919))
-            (if (plusp x)
-                0
-                -1)))))
+             (ash
+              (%signed-multiply-high x
+               (if (plusp x)
+                   858993459
+                   1717986919))
+              (if (plusp x)
+                  0
+                  -1)))))
   (assert (equal
            (gen-ceilinged-div-by-constant-expr 7
+                                     (- (expt 2 (1- sb!vm:n-word-bits)))
+                                     (1- (expt 2 (1- sb!vm:n-word-bits))))
+           nil))
+  ;; unsigned floor:
+  (assert (equal
+           (gen-floored-div-by-constant-expr 11 0
+                                               (1- (expt 2 sb!vm:n-word-bits)))
+           '(truly-the (integer 0 390451572)
+             (ash
+              (%multiply-high x
+               ;; The unnecessary condition checking is
+               ;; removed at compile-time
+               (if (plusp x)
+                   3123612579
+                   3123612579))
+              (if (plusp x)
+                  -3
+                  -3)))))
+  (assert (equal
+           (gen-floored-div-by-constant-expr 7 0
+                                               (1- (expt 2 sb!vm:n-word-bits)))
+           '(truly-the (integer 0 613566756)
+             (let* ((num x) (t1 (%multiply-high num 613566757)))
+               (ash (truly-the word (+ t1 (ash (truly-the word (- num t1)) -1)))
+                    -2)))))
+  ;; signed floor:
+  (assert (equal
+           (gen-floored-div-by-constant-expr 5
+                                     (- (expt 2 (1- sb!vm:n-word-bits)))
+                                     (1- (expt 2 (1- sb!vm:n-word-bits))))
+           '(truly-the (integer -429496730 429496729)
+             (ash
+              (%signed-multiply-high x
+               (if (plusp x)
+                   1717986919
+                   858993459))
+              (if (plusp x)
+                  -1
+                  0)))))
+  (assert (equal
+           (gen-floored-div-by-constant-expr 7
                                      (- (expt 2 (1- sb!vm:n-word-bits)))
                                      (1- (expt 2 (1- sb!vm:n-word-bits))))
            nil)))
@@ -642,3 +718,52 @@
                                        ,(if (plusp y) 0 (- -1 y)))
                                       (- rem ,y)))
                    (values quot rem))))))))
+
+;;; Floor with signed args.
+;;; Calculate the remainder by using X-(Q+1)*Y+Y when the result
+;;; is negative and X-Q*Y otherwise, to avoid an overflow.
+(deftransform floor ((x y) (sb!vm:signed-word
+                               (constant-arg sb!vm:signed-word))
+                        *
+                        :policy (and (> speed compilation-speed)
+                                     (> speed space)))
+  "convert signed integer division to multiplication"
+  (let* ((y      (lvar-value y))
+         (x-type (lvar-type x))
+         (max-x  (or (and (numeric-type-p x-type)
+                          (numeric-type-high x-type))
+                     (- (expt 2 (1- sb!vm:n-word-bits)) 1)))
+         (min-x  (or (and (numeric-type-p x-type)
+                          (numeric-type-low x-type))
+                     (- (expt 2 (1- sb!vm:n-word-bits))))))
+    ;; Division by zero, one or powers of two is handled elsewhere.
+    (when (zerop (logand (abs y) (1- (abs y))))
+      (give-up-ir1-transform))
+    ;; Use the unsigned transform if we can since it has a
+    ;; simpler remainder calculation
+    (when (and (>= min-x 0) (<= max-x most-positive-word)
+               (typep y 'word))
+      (give-up-ir1-transform))
+    (let ((quot-expr (gen-floored-div-by-constant-expr y min-x max-x))
+          (negative-p (if (plusp y) '(minusp x) '(plusp x)))
+          (quot-min (floor min-x y))
+          (quot-max (floor max-x y)))
+      (unless quot-expr (give-up-ir1-transform))
+      (when (minusp y) (rotatef quot-min quot-max))
+      (when (minusp quot-min) (incf quot-min))
+      (when (minusp quot-max) (incf quot-max))
+      `(let ((quot ,quot-expr))
+         (when ,negative-p (incf quot))
+         (let ((rem (truly-the (integer ,(if (plusp y) (- y) (1+ y))
+                                        ,(if (plusp y) (1- y) (- y)))
+                               (- x
+                                  (* (truly-the (integer ,quot-min ,quot-max)
+                                                quot)
+                                     ,y)))))
+           (if ,negative-p
+               (values (1- quot)
+                       (truly-the (integer
+                                   ,(if (plusp y) 0 (1+ y))
+                                   ,(if (plusp y) (1- y) 0))
+                                  (+ rem ,y)))
+               (values quot rem)))))))
