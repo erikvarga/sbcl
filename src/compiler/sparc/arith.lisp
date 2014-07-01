@@ -1029,6 +1029,26 @@
   (:generator 40
     (emit-multiply x y hi lo)))
 
+(define-vop (fixnum-to-tagged-word)
+  (:translate %fixnum-to-tagged-word)
+  (:policy :fast-safe)
+  (:args (fixnum :scs (any-reg) :target num))
+  (:arg-types positive-fixnum)
+  (:results (num :scs (unsigned-reg)))
+  (:result-types unsigned-num)
+  (:generator 1
+    (move num fixnum)))
+
+(define-vop (tagged-word-to-fixnum)
+  (:translate %tagged-word-to-fixnum)
+  (:policy :fast-safe)
+  (:args (num :scs (unsigned-reg) :target fixnum))
+  (:arg-types unsigned-num)
+  (:results (fixnum :scs (any-reg)))
+  (:result-types positive-fixnum)
+  (:generator 1
+    (move fixnum num)))
+
 (define-vop (bignum-lognot lognot-mod32/unsigned=>unsigned)
   (:translate sb!bignum:%lognot))
 

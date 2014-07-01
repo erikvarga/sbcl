@@ -336,6 +336,12 @@
     sb!vm:signed-word
     (movable foldable flushable))
 
+(defknown %fixnum-to-tagged-word ((and word fixnum)) word
+    (movable foldable flushable))
+
+(defknown %tagged-word-to-fixnum (word) (and word fixnum)
+    (movable foldable flushable))
+
 (defknown (mod rem) (real real) real
   (movable foldable flushable explicit-check))
 
