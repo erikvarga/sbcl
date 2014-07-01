@@ -932,6 +932,116 @@
     (inst smull lo hi x y)
     (inst bic hi hi fixnum-tag-mask)))
 
+#!+multiply-high-vops
+(define-vop (mulhi-shift)
+  (:translate %multiply-high-and-shift)
+  (:policy :fast-safe)
+  (:args (x :scs (unsigned-reg) :target hi)
+         (y :scs (unsigned-reg))
+         (shift :scs (unsigned-reg)))
+  (:arg-types unsigned-num unsigned-num unsigned-num)
+  (:temporary (:sc unsigned-reg) lo)
+  (:temporary (:sc unsigned-reg :target result) hi)
+  (:results (result :scs (unsigned-reg)))
+  (:result-types unsigned-num)
+  (:generator 21
+    (inst umull lo hi x y)
+    (inst mov result (lsr hi shift))))
+
+#!+multiply-high-vops
+(define-vop (mulhi-shift/c)
+  (:translate %multiply-high-and-shift)
+  (:policy :fast-safe)
+  (:args (x :scs (unsigned-reg) :target hi)
+         (y :scs (unsigned-reg)))
+  (:arg-types unsigned-num unsigned-num (:constant word))
+  (:info shift)
+  (:temporary (:sc unsigned-reg) lo)
+  (:temporary (:sc unsigned-reg :target result) hi)
+  (:results (result :scs (unsigned-reg)))
+  (:result-types unsigned-num)
+  (:generator 21
+    (cond ((< shift 32)
+           (inst umull lo hi x y)
+           (inst mov result (lsr hi shift)))
+          (t
+           (inst mov result 0)))))
+
+#!+multiply-high-vops
+(define-vop (mulhi-shift/c/fx)
+  (:translate %multiply-high-and-shift)
+  (:policy :fast-safe)
+  (:args (x :scs (any-reg) :target hi)
+         (y :scs (unsigned-reg)))
+  (:arg-types positive-fixnum unsigned-num (:constant word))
+  (:info shift)
+  (:temporary (:sc any-reg) lo)
+  (:temporary (:sc any-reg :target result) hi)
+  (:results (result :scs (any-reg)))
+  (:result-types positive-fixnum)
+  (:generator 16
+    (cond ((< shift 32)
+           (inst umull lo hi x y)
+           (inst mov result (lsr hi shift))
+           (inst bic result result fixnum-tag-mask))
+          (t
+           (inst mov result 0)))))
+
+#!+multiply-high-vops
+(define-vop (smulhi-shift)
+  (:translate %signed-multiply-high-and-shift)
+  (:policy :fast-safe)
+  (:args (x :scs (signed-reg) :target hi)
+         (y :scs (signed-reg))
+         (shift :scs (unsigned-reg)))
+  (:arg-types signed-num signed-num unsigned-num)
+  (:temporary (:sc signed-reg) lo)
+  (:temporary (:sc signed-reg :target result) hi)
+  (:results (result :scs (signed-reg)))
+  (:result-types signed-num)
+  (:generator 21
+    (inst smull lo hi x y)
+    (inst mov result (asr hi shift))))
+
+#!+multiply-high-vops
+(define-vop (smulhi-shift/c)
+  (:translate %signed-multiply-high-and-shift)
+  (:policy :fast-safe)
+  (:args (x :scs (signed-reg) :target hi)
+         (y :scs (signed-reg)))
+  (:arg-types signed-num signed-num (:constant word))
+  (:info shift)
+  (:temporary (:sc signed-reg) lo)
+  (:temporary (:sc signed-reg :target result) hi)
+  (:results (result :scs (signed-reg)))
+  (:result-types signed-num)
+  (:generator 21
+    (cond ((< shift 32)
+           (inst smull lo hi x y)
+           (inst mov result (asr hi shift)))
+          (t
+           (inst mov result 0)))))
+
+#!+multiply-high-vops
+(define-vop (smulhi-shift/c/fx)
+  (:translate %signed-multiply-high-and-shift)
+  (:policy :fast-safe)
+  (:args (x :scs (any-reg) :target hi)
+         (y :scs (signed-reg)))
+  (:arg-types fixnum signed-num (:constant word))
+  (:info shift)
+  (:temporary (:sc any-reg) lo)
+  (:temporary (:sc any-reg :target result) hi)
+  (:results (result :scs (any-reg)))
+  (:result-types fixnum)
+  (:generator 16
+    (cond ((< shift 32)
+           (inst smull lo hi x y)
+           (inst mov result (asr hi shift))
+           (inst bic result result fixnum-tag-mask))
+          (t
+           (inst mov result 0)))))
+
 (define-vop (bignum-lognot lognot-mod32/unsigned=>unsigned)
   (:translate sb!bignum:%lognot))
 

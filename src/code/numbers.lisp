@@ -674,6 +674,23 @@
   #!+multiply-high-vops
   (%signed-multiply-high x y))
 
+#!-multiply-high-vops (declaim (inline %multiply-high-and-shift))
+(defun %multiply-high-and-shift (x y shift)
+  (declare (type word x y shift))
+  #!-multiply-high-vops
+  (ash (%multiply-high x y) (- shift))
+  #!+multiply-high-vops
+  (%multiply-high-and-shift x y shift))
+
+#!-multiply-high-vops (declaim (inline %signed-multiply-high-and-shift))
+(defun %signed-multiply-high-and-shift (x y shift)
+  (declare (type sb!vm:signed-word x y)
+           (type word shift))
+  #!-multiply-high-vops
+  (ash (%signed-multiply-high x y) (- shift))
+  #!+multiply-high-vops
+  (%signed-multiply-high-and-shift x y shift))
+
 (defun floor (number &optional (divisor 1))
   #!+sb-doc
   "Return the greatest integer not greater than number, or number/divisor.

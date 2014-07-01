@@ -267,36 +267,32 @@
                (multiple-value-call 'get-scaled-multiplier
                  (choose-multiplier (/ y (ash 1 shift1))
                                            (ash max-x (- shift1))))))
-           (cond ((>= m n)
-                  (cond ((< max-x (1- n))
-                         (let* ((shift
-                                (+ (integer-length max-x) (integer-length y) -1))
-                               (m (floor (ash 1 shift) y)))
-                           (cond ((< (* (1+ max-x) m) n)
-                                  `(ash (* (+1 x) ,m) ,(- shift)))
-                                 (t
-                                  (let ((scale
-                                         (max 0 (- sb!vm:n-word-bits shift))))
-                                    `(ash (%multiply-high (1+ x)
-                                                          ,(ash m scale))
-                                          ,(- sb!vm:n-word-bits shift scale)))))))
-                        (t
-                         (flet ((word (x)
-                                  `(truly-the word ,x)))
-                           `(let* ((num x)
-                                   (t1 (%multiply-high num ,(- m n))))
-                              (ash ,(word `(+ t1 (ash ,(word `(- num t1))
-                                                      -1)))
-                                   ,(- 1 shift2)))))))
-                 ((and (zerop shift1) (zerop shift2))
-                  (let ((max (truncate max-x y)))
-                    ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
-                    ;; VOP.
-                    `(truly-the (integer 0 ,max)
-                                (%multiply-high x ,m))))
-                 (t
-                  `(ash (%multiply-high (logandc2 x ,(1- (ash 1 shift1))) ,m)
-                        ,(- (+ shift1 shift2)))))))))))
+           (if (>= m n)
+               (if (< max-x (1- n))
+                   (let* ((shift
+                           (+ (integer-length max-x) (integer-length y) -1))
+                          (m (floor (ash 1 shift) y)))
+                     (if (< (* (1+ max-x) m) n)
+                         `(ash (* (+1 x) ,m) ,(- shift))
+                         (let ((scale
+                                (max 0 (- sb!vm:n-word-bits shift))))
+                           `(ash (%multiply-high (1+ x)
+                                                 ,(ash m scale))
+                                 ,(- sb!vm:n-word-bits shift scale)))))
+                   (flet ((word (x)
+                            `(truly-the word ,x)))
+                     `(let* ((num x)
+                             (t1 (%multiply-high num ,(- m n))))
+                        (ash ,(word `(+ t1 (ash ,(word `(- num t1))
+                                                -1)))
+                             ,(- 1 shift2)))))
+               ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
+               ;; VOP
+               `(truly-the (integer 0 ,(truncate max-x y))
+                           (%multiply-high-and-shift
+                            (logandc2 x ,(1- (ash 1 shift1)))
+                            ,m
+                            ,(+ shift1 shift2))))))))))
 
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
@@ -304,14 +300,15 @@
 #+sb-xc-host
 (when (= sb!vm:n-word-bits 32)
   (assert (equal (gen-unsigned-div-by-constant-expr 10 most-positive-word)
-                 '(ash (%multiply-high (logandc2 x 0) 3435973837) -3)))
+                 '(truly-the (integer 0 429496729)
+                   (%multiply-high-and-shift (logandc2 x 0) 3435973837 3))))
   (assert (equal (gen-unsigned-div-by-constant-expr 7 most-positive-word)
-                  '(let* ((num x)
-                          (t1 (%multiply-high num 613566757)))
-                    (ash
-                     (truly-the word
-                      (+ t1 (ash (truly-the word (- num t1)) -1)))
-                     -2)))))
+                 '(let* ((num x)
+                         (t1 (%multiply-high num 613566757)))
+                   (ash
+                    (truly-the word
+                     (+ t1 (ash (truly-the word (- num t1)) -1)))
+                    -2)))))
 
 ;;; Return an expression for calculating the quotient like in the previous
 ;;; function, but the arguments have to fit in signed words.
@@ -322,46 +319,42 @@
            (type sb!vm:signed-word min-x max-x))
   (aver (not (zerop (logand (abs y) (1- (abs y))))))
   (aver (<= min-x max-x))
-  (let ((expr
-    (let ((n (expt 2 (1- sb!vm:n-word-bits))))
-      (multiple-value-bind (m shift)
-          (choose-multiplier (abs y) (max (abs max-x) (abs min-x)))
-        (cond
-          ((and (< (max (* max-x m) (* min-x m)) n)
-                (>= (min (* max-x m) (* min-x m)) (- n)))
-           `(ash (* num ,m) ,(- shift)))
-          (t
-           (multiple-value-setq (m shift)
-             (get-scaled-multiplier m shift))
-           (cond ((>= m n)
-                  `(ash (truly-the
-                         sb!vm:signed-word
-                         (+ num
-                            (%signed-multiply-high num ,(- m (* 2 n)))))
-                        ,(- shift)))
-                 ((zerop shift)
-                  ;; Determine the range of the quotient before
-                  ;; the negation and subtraction is applied to it
-                  (let ((max (truncate max-x (abs y)))
-                        (min (truncate min-x (abs y))))
-                    (setq min (1- min))
-                    ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
-                    ;; VOP.
-                    `(truly-the (integer ,min ,max)
-                                (%signed-multiply-high num ,m))))
-                 (t
-                  `(ash (%signed-multiply-high num ,m)
-                        ,(- shift))))))))))
-    (setq expr `(- ,expr
-                   (ash num ,(- sb!vm:n-word-bits))))
+  (let* ((n (expt 2 (1- sb!vm:n-word-bits)))
+         (expr
+          (multiple-value-bind (m shift)
+              (choose-multiplier (abs y) (max (abs max-x) (abs min-x)))
+            (cond
+              ((and (< (* max-x m) n) (>= (* min-x m) (- n)))
+               `(ash (* num ,m) ,(- shift)))
+              (t
+               (multiple-value-setq (m shift)
+                 (get-scaled-multiplier m shift))
+               (if (>= m n)
+                   `(ash (truly-the
+                          sb!vm:signed-word
+                          (+ num
+                             (%signed-multiply-high num ,(- m (* 2 n)))))
+                         ,(- shift))
+                   ;; Determine the range of the quotient before
+                   ;; the negation and subtraction is applied to it
+                   (let ((max (truncate max-x (abs y)))
+                         (min (truncate min-x (abs y))))
+                     (setq min (1- min))
+                     ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
+                     ;; VOP.
+                     `(truly-the (integer ,min ,max)
+                                 (%signed-multiply-high-and-shift
+                                  num ,m ,shift)))))))))
+    (setq expr
+          `(- ,expr (ash num ,(- sb!vm:n-word-bits))))
     (when (minusp y)
       (setq expr `(- ,expr)))
     (let ((max (truncate max-x y))
           (min (truncate min-x y)))
       (when (minusp y) (rotatef min max))
-      (setq expr `(let ((num x))
-                    (truly-the (integer ,min ,max)
-                               ,expr))))))
+      `(let ((num x))
+         (truly-the (integer ,min ,max)
+                    ,expr)))))
 
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
@@ -374,7 +367,9 @@
                                             (1- (expt 2 (1- sb!vm:n-word-bits))))
            '(let ((num x))
              (truly-the (integer -195225786 195225786)
-              (- (ash (%signed-multiply-high num 780903145) -1)
+              (-
+               (truly-the (integer -195225787 195225786)
+                          (%signed-multiply-high-and-shift num 780903145 1))
                (ash num -32))))))
   (assert (equal
            (gen-signed-div-by-constant-expr 7
@@ -382,10 +377,11 @@
                                             (1- (expt 2 (1- sb!vm:n-word-bits))))
            '(let ((num x))
              (truly-the (integer -306783378 306783378)
-              (- (ash
-                  (truly-the sb!vm:signed-word
-                             (+ num (%signed-multiply-high num -1840700269)))
-                  -2)
+              (-
+               (ash
+                (truly-the sb!vm:signed-word
+                           (+ num (%signed-multiply-high num -1840700269)))
+                -2)
                (ash num -32)))))))
 
 ;;; Return an expression for calculating the quotient like in the previous
@@ -417,24 +413,23 @@
                  `(let ((num x))
                     (ash
                      ,(if (plusp m)
-                          `(+ (%signed-multiply-high num
-                                 ,(- m (expt 2 sb!vm:n-word-bits)))
+                          `(+ (%signed-multiply-high
+                               num ,(- m (expt 2 sb!vm:n-word-bits)))
                               num)
-                          `(- (signed-multiply-high num
-                                 ,(+ m (expt 2 sb!vm:n-word-bits)))
+                          `(- (%signed-multiply-high
+                               num ,(+ m (expt 2 sb!vm:n-word-bits)))
                               num))
                      ,(- shift)))
                  `(let* ((num x)
-                         (t1 (%multiply-high num
-                                             ,(- m (expt 2 sb!vm:n-word-bits)))))
+                         (t1 (%multiply-high
+                              num ,(- m (expt 2 sb!vm:n-word-bits)))))
                     (ash ,(word `(+ t1 (ash ,(word `(- num t1))
                                             -1)))
-                     ,(- 1 shift)))))
-           `(ash (,(if signed-p
-                       '%signed-multiply-high
-                       '%multiply-high)
-                   x ,m)
-                 ,(- shift))))
+                         ,(- 1 shift)))))
+           `(,(if signed-p
+                  '%signed-multiply-high-and-shift
+                  '%multiply-high-and-shift)
+              x ,m ,shift)))
      (gen (y min-x max-x
              choose-multiplier-fun large-y-expr
              min-quot max-quot)
@@ -445,8 +440,8 @@
        (aver (not (zerop (logand y (1- y)))))
        (let* ((signed-p (or (minusp min-x) (minusp y)))
               (n-min (if signed-p
-                         (- (expt 2 (1- sb!vm:n-word-bits)))
-                         0))
+                    (- (expt 2 (1- sb!vm:n-word-bits)))
+                    0))
               (n-max (expt 2 (- sb!vm:n-word-bits
                                 (if signed-p 1 0))))
               (precision (integer-length
@@ -513,12 +508,13 @@
                       ((<= x 0) 0)
                       ((< x ,(- y)) -1)
                       (t -2)))
-         min max)))
+           min max)))
   (defun gen-floored-div-by-constant-expr (y min-x max-x)
     (let ((min (floor min-x y))
           (max (floor max-x y)))
       (when (minusp y) (rotatef min max))
-      (gen y min-x max-x 'choose-floor-multiplier
+      (gen y min-x max-x
+           'choose-floor-multiplier
            (if (plusp y)
                `(cond ((>= x ,y) 1)
                       ((>= x 0) 0)
@@ -528,7 +524,7 @@
                       ((<= x 0) 0)
                       ((<= x ,(- y)) -1)
                       (t -2)))
-         min max))))
+           min max))))
 
 ;;; The following asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous
@@ -540,11 +536,11 @@
            (gen-ceilinged-div-by-constant-expr 7 0
                                                (1- (expt 2 sb!vm:n-word-bits)))
            '(truly-the (integer 0 613566756)
-             (if t
-                 ;; The unnecessary condition checking is
-                 ;; removed at compile-time
-                 (ash (%multiply-high x 1227133513) -1)
-                 (ash (%multiply-high x 1227133513) -1)))))
+           (if t
+               ;; The unnecessary condition checking is
+               ;; removed at compile-time
+               (%multiply-high-and-shift x 1227133513 1)
+               (%multiply-high-and-shift x 1227133513 1)))))
   (assert (equal
            (gen-ceilinged-div-by-constant-expr 11 0
                                                (1- (expt 2 sb!vm:n-word-bits)))
@@ -565,15 +561,15 @@
                                      (1- (expt 2 (1- sb!vm:n-word-bits))))
            '(truly-the (integer -429496730 429496729)
              (if (plusp x)
-                 (ash (%signed-multiply-high x 858993459) 0)
-                 (ash (%signed-multiply-high x 1717986919) -1)))))
+                 (%signed-multiply-high-and-shift x 858993459 0)
+                 (%signed-multiply-high-and-shift x 1717986919 1)))))
   (assert (equal
            (gen-ceilinged-div-by-constant-expr 7
                                      (- (expt 2 (1- sb!vm:n-word-bits)))
                                      (1- (expt 2 (1- sb!vm:n-word-bits))))
            '(truly-the (integer -306783379 306783378)
              (if (plusp x)
-                 (ash (%signed-multiply-high x 1227133513) -1)
+                 (%signed-multiply-high-and-shift x 1227133513 1)
                  (let ((num x))
                    (ash (+ (%signed-multiply-high num -1840700269) num) -2))))))
   ;; unsigned floor:
@@ -582,8 +578,8 @@
                                                (1- (expt 2 sb!vm:n-word-bits)))
            '(truly-the (integer 0 390451572)
              (if t
-                 (ash (%multiply-high x 3123612579) -3)
-                 (ash (%multiply-high x 3123612579) -3)))))
+                 (%multiply-high-and-shift x 3123612579 3)
+                 (%multiply-high-and-shift x 3123612579 3)))))
   (assert (equal
            (gen-floored-div-by-constant-expr 7 0
                                                (1- (expt 2 sb!vm:n-word-bits)))
@@ -610,8 +606,8 @@
                                      (1- (expt 2 (1- sb!vm:n-word-bits))))
            '(truly-the (integer -429496730 429496729)
              (if (plusp x)
-                 (ash (%signed-multiply-high x 1717986919) -1)
-                 (ash (%signed-multiply-high x 858993459) 0)))))
+                 (%signed-multiply-high-and-shift x 1717986919 1)
+                 (%signed-multiply-high-and-shift x 858993459 0)))))
   (assert (equal
            (gen-floored-div-by-constant-expr 7
                                      (- (expt 2 (1- sb!vm:n-word-bits)))
@@ -620,7 +616,7 @@
              (if (plusp x)
                  (let ((num x))
                    (ash (+ (%signed-multiply-high num -1840700269) num) -2))
-                 (ash (%signed-multiply-high x 1227133513) -1))))))
+                 (%signed-multiply-high-and-shift x 1227133513 1))))))
 
 ;;; If the divisor is constant and both args are positive and fit in a
 ;;; machine word, replace the division by a multiplication and possibly
