@@ -240,20 +240,27 @@
 ;;; described in the paper "N-Bit Unsigned Division Via N-Bit Multiply-Add",
 ;;; 2005 by Arch D. Robison.  Once again, use multiply-high only if
 ;;; multiplication and shifting cannot be done directly.
-(defun gen-unsigned-div-by-constant-expr (y max-x)
+(defun gen-unsigned-div-by-constant-expr (y max-x fixnum-p)
   (declare (type (integer 3 #.most-positive-word) y)
            (type word max-x))
   (aver (not (zerop (logand y (1- y)))))
   (flet ((ld (x)
              ;; the floor of the binary logarithm of (positive) X
              (integer-length (1- x))))
-    (let ((n (expt 2 sb!vm:n-word-bits))
-          (shift1 0))
+    (let* ((x (if fixnum-p '(%fixnum-to-tagged-word x) 'x))
+           (n (expt 2 sb!vm:n-word-bits))
+           (tag-shift (if fixnum-p sb!vm:n-fixnum-tag-bits 0))
+           (shift1 0)
+           (expr (progn
+      (when fixnum-p
+        (when (> (integer-length y) sb!vm:n-fixnum-bits)
+          (return-from gen-unsigned-div-by-constant-expr 0))
+        (setq y (ash y sb!vm:n-fixnum-tag-bits)))
       (multiple-value-bind (m shift2)
           (choose-multiplier y max-x)
         (cond
           ((< (* max-x m) n)
-           `(ash (* x ,m) ,(- shift2)))
+           `(ash (* ,x ,m) ,(- tag-shift shift2)))
           (t
            (multiple-value-setq (m shift2)
              (get-scaled-multiplier m shift2))
@@ -267,41 +274,41 @@
                   (cond ((< max-x (1- n))
                          (let* ((shift
                                 (+ (integer-length max-x) (integer-length y) -1))
-                               (m (floor (ash 1 shift) y)))
+                                (m (floor (ash 1 shift) y)))
                            (cond ((< (* (1+ max-x) m) n)
-                                  `(ash (* (+1 x) ,m) ,(- shift)))
+                                  `(ash (* (+1 ,x) ,m) ,(- tag-shift shift)))
                                  (t
                                   (let ((scale
                                          (max 0 (- sb!vm:n-word-bits shift))))
-                                    `(ash (%multiply-high (1+ x)
+                                    `(ash (%multiply-high (1+ ,x)
                                                           ,(ash m scale))
-                                          ,(- sb!vm:n-word-bits shift scale)))))))
+                                          ,(+ (- sb!vm:n-word-bits shift scale)
+                                              tag-shift)))))))
                         (t
                          (flet ((word (x)
                                   `(truly-the word ,x)))
-                           `(let* ((num x)
+                           `(let* ((num ,x)
                                    (t1 (%multiply-high num ,(- m n))))
                               (ash ,(word `(+ t1 (ash ,(word `(- num t1))
                                                       -1)))
-                                   ,(- 1 shift2)))))))
-                 ((and (zerop shift1) (zerop shift2))
-                  (let ((max (truncate max-x y)))
-                    ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
-                    ;; VOP.
-                    `(truly-the (integer 0 ,max)
-                                (%multiply-high x ,m))))
+                                   ,(- tag-shift -1 shift2)))))))
                  (t
-                  `(ash (%multiply-high (logandc2 x ,(1- (ash 1 shift1))) ,m)
-                        ,(- (+ shift1 shift2)))))))))))
+                  `(ash (%multiply-high (logandc2 ,x ,(1- (ash 1 shift1))) ,m)
+                        ,(- tag-shift (+ shift1 shift2)))))))))))
+      (if fixnum-p
+          `(%tagged-word-to-fixnum
+            (logandc2 (truly-the word ,expr)
+                      ,sb!vm:fixnum-tag-mask))
+          expr))))
 
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
 ;;; function, under a word size of 32 bits:
 #+sb-xc-host
 (when (= sb!vm:n-word-bits 32)
-  (assert (equal (gen-unsigned-div-by-constant-expr 10 most-positive-word)
+  (assert (equal (gen-unsigned-div-by-constant-expr 10 most-positive-word nil)
                  '(ash (%multiply-high (logandc2 x 0) 3435973837) -3)))
-  (assert (equal (gen-unsigned-div-by-constant-expr 7 most-positive-word)
+  (assert (equal (gen-unsigned-div-by-constant-expr 7 most-positive-word nil)
                   '(let* ((num x)
                           (t1 (%multiply-high num 613566757)))
                     (ash
@@ -605,7 +612,9 @@
     ;; Division by zero, one or powers of two is handled elsewhere.
     (when (zerop (logand y (1- y)))
       (give-up-ir1-transform))
-    `(let* ((quot ,(gen-unsigned-div-by-constant-expr y max-x))
+    `(let* ((quot ,(gen-unsigned-div-by-constant-expr y max-x
+                                                      (<= max-x
+                                                          most-positive-fixnum)))
             (rem (ldb (byte #.sb!vm:n-word-bits 0)
                       (- x (* quot ,y)))))
        (values quot rem))))
