@@ -439,9 +439,10 @@
                    ,(* (signum y) neg-m)))
            (expr
             (cond
-              ((> (abs y) n-max)
-               ;; the shift value is too large if Y is above
-               ;; 2^(W-1), so we emit a different code
+              ((> (abs y) (ash n-max -1))
+               ;; When Y is above 2^(W-1), there are only a few
+               ;; possible results, and we can use comparisons
+               ;; to determine the correct one.
                large-y-expr)
               ((and (< (* max-x (max pos-m neg-m)) n-max)
                     (>= (* min-x (max pos-m neg-m)) n-min))
