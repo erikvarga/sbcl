@@ -249,18 +249,13 @@
              (integer-length (1- x))))
     (let* ((x (if fixnum-p '(%fixnum-to-tagged-word x) 'x))
            (n (expt 2 sb!vm:n-word-bits))
-           (tag-shift (if fixnum-p sb!vm:n-fixnum-tag-bits 0))
            (shift1 0)
            (expr (progn
-      (when fixnum-p
-        (when (> (integer-length y) sb!vm:n-fixnum-bits)
-          (return-from gen-unsigned-div-by-constant-expr 0))
-        (setq y (ash y sb!vm:n-fixnum-tag-bits)))
       (multiple-value-bind (m shift2)
           (choose-multiplier y max-x)
         (cond
           ((< (* max-x m) n)
-           `(ash (* ,x ,m) ,(- tag-shift shift2)))
+           `(ash (* ,x ,m) ,(- shift2)))
           (t
            (multiple-value-setq (m shift2)
              (get-scaled-multiplier m shift2))
@@ -276,14 +271,13 @@
                                 (+ (integer-length max-x) (integer-length y) -1))
                                 (m (floor (ash 1 shift) y)))
                            (cond ((< (* (1+ max-x) m) n)
-                                  `(ash (* (+1 ,x) ,m) ,(- tag-shift shift)))
+                                  `(ash (* (+1 ,x) ,m) ,(- shift)))
                                  (t
                                   (let ((scale
                                          (max 0 (- sb!vm:n-word-bits shift))))
                                     `(ash (%multiply-high (1+ ,x)
                                                           ,(ash m scale))
-                                          ,(+ (- sb!vm:n-word-bits shift scale)
-                                              tag-shift)))))))
+                                          ,(- sb!vm:n-word-bits shift scale)))))))
                         (t
                          (flet ((word (x)
                                   `(truly-the word ,x)))
@@ -291,14 +285,13 @@
                                    (t1 (%multiply-high num ,(- m n))))
                               (ash ,(word `(+ t1 (ash ,(word `(- num t1))
                                                       -1)))
-                                   ,(- tag-shift -1 shift2)))))))
+                                   ,(- 1 shift2)))))))
                  (t
                   `(ash (%multiply-high (logandc2 ,x ,(1- (ash 1 shift1))) ,m)
-                        ,(- tag-shift (+ shift1 shift2)))))))))))
+                        ,(- (+ shift1 shift2)))))))))))
       (if fixnum-p
           `(%tagged-word-to-fixnum
-            (logandc2 (truly-the word ,expr)
-                      ,sb!vm:fixnum-tag-mask))
+            (logandc2 ,expr ,sb!vm:fixnum-tag-mask))
           expr))))
 
 ;;; The following two asserts show the expected average case and worst case
