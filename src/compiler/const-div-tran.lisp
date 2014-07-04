@@ -695,6 +695,8 @@
     ;; Division by zero, one or powers of two is handled elsewhere.
     (when (zerop (logand (abs y) (1- (abs y))))
       (give-up-ir1-transform))
+    ;; Use the unsigned transform instead, if we can.
+    (unless (or (< y 0) (< min-x 0)) (give-up-ir1-transform))
     `(let* ((quot ,(gen-signed-div-by-constant-expr y min-x max-x))
             (rem (truly-the (integer ,(- 1 (abs y)) ,(- (abs y) 1))
                             (- x (* quot ,y)))))
