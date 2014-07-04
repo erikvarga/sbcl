@@ -240,19 +240,31 @@
 ;;; described in the paper "N-Bit Unsigned Division Via N-Bit Multiply-Add",
 ;;; 2005 by Arch D. Robison.  Once again, use multiply-high only if
 ;;; multiplication and shifting cannot be done directly.
-(defun gen-unsigned-div-by-constant-expr (y max-x fixnum-p)
+(defun gen-unsigned-div-by-constant-expr (y max-x optimize-fixnum-p)
   (declare (type (integer 3 #.most-positive-word) y)
            (type word max-x))
   (aver (not (zerop (logand y (1- y)))))
   (flet ((ld (x)
              ;; the floor of the binary logarithm of (positive) X
-             (integer-length (1- x))))
-    (let* ((x (if fixnum-p '(%fixnum-to-tagged-word x) 'x))
+             (integer-length (1- x)))
+         (shift-back (x)
+           (ash x (- sb!vm::n-fixnum-tag-bits))))
+    (when optimize-fixnum-p (setq max-x (ash max-x sb!vm::n-fixnum-tag-bits)))
+    (let* ((x (if optimize-fixnum-p `(truly-the (integer 0 ,max-x)
+                                      (%fixnum-to-tagged-word x))
+                  'x))
            (n (expt 2 sb!vm:n-word-bits))
            (shift1 0)
            (expr (progn
       (multiple-value-bind (m shift2)
           (choose-multiplier y max-x)
+        (when (and
+               optimize-fixnum-p
+               (< (* (shift-back max-x) m) n))
+          ;; Don't optimize for fixnums if we
+          ;; can use direct multiplication
+          (return-from gen-unsigned-div-by-constant-expr
+            (gen-unsigned-div-by-constant-expr y (shift-back max-x) nil)))
         (cond
           ((< (* max-x m) n)
            `(ash (* ,x ,m) ,(- shift2)))
@@ -266,6 +278,12 @@
                  (choose-multiplier (/ y (ash 1 shift1))
                                            (ash max-x (- shift1))))))
            (cond ((>= m n)
+                  (when optimize-fixnum-p
+                    ;; Don't optimize for fixnums if it makes us use
+                    ;; N+1-bit multiplication or multiply-add
+                    (return-from gen-unsigned-div-by-constant-expr
+                      (gen-unsigned-div-by-constant-expr
+                       y (shift-back max-x) nil)))
                   (cond ((< max-x (1- n))
                          (let* ((shift
                                 (+ (integer-length max-x) (integer-length y) -1))
@@ -289,7 +307,7 @@
                  (t
                   `(ash (%multiply-high (logandc2 ,x ,(1- (ash 1 shift1))) ,m)
                         ,(- (+ shift1 shift2)))))))))))
-      (if fixnum-p
+      (if optimize-fixnum-p
           `(%tagged-word-to-fixnum
             (logandc2
              (%lose-word-derived-type ,expr)
