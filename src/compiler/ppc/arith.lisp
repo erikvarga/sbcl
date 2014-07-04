@@ -1221,25 +1221,22 @@
     (inst lr mask fixnum-tag-mask)
     (inst andc hi temp mask)))
 
-(define-vop (fixnum-to-tagged-word)
-  (:translate %fixnum-to-tagged-word)
-  (:policy :fast-safe)
-  (:args (fixnum :scs (any-reg) :target num))
-  (:arg-types positive-fixnum)
-  (:results (num :scs (unsigned-reg)))
-  (:result-types unsigned-num)
-  (:generator 1
-    (move num fixnum)))
-
-(define-vop (tagged-word-to-fixnum)
-  (:translate %tagged-word-to-fixnum)
-  (:policy :fast-safe)
-  (:args (num :scs (unsigned-reg) :target fixnum))
-  (:arg-types unsigned-num)
-  (:results (fixnum :scs (any-reg)))
-  (:result-types positive-fixnum)
-  (:generator 1
-    (move fixnum num)))
+(macrolet ((def (name fun arg-type arg-reg res-type res-reg)
+              `(define-vop (,name)
+                 (:translate ,fun)
+                 (:policy :fast-safe)
+                 (:args (arg :scs (,arg-reg) :target res))
+                 (:arg-types ,arg-type)
+                 (:results (res :scs (,res-reg)))
+                 (:result-types ,res-type)
+                 (:generator 1
+                   (move res arg)))))
+  (def fixnum-to-tagged-word %fixnum-to-tagged-word
+    positive-fixnum any-reg unsigned-num unsigned-reg)
+  (def tagged-word-to-fixnum %tagged-word-to-fixnum
+    unsigned-num unsigned-reg positive-fixnum any-reg)
+  (def lose-word-derived-type %lose-word-derived-type
+    unsigned-num unsigned-reg unsigned-num unsigned-reg))
 
 (define-vop (bignum-lognot lognot-mod32/unsigned=>unsigned)
   (:translate sb!bignum:%lognot))
@@ -1253,7 +1250,6 @@
   (:result-types unsigned-num)
   (:generator 1
     (inst srawi digit fixnum n-fixnum-tag-bits)))
-
 
 (define-vop (bignum-floor)
   (:translate sb!bignum:%bigfloor)

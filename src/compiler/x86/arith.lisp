@@ -1738,6 +1738,19 @@ constant shift greater than word length")))
   (:generator 1
     (move fixnum num)))
 
+(define-vop (lose-word-derived-type)
+  (:translate %lose-word-derived-type)
+  (:policy :fast-safe)
+  (:args (num :scs (unsigned-reg unsigned-stack) :target new-num))
+  (:arg-types unsigned-num)
+  (:results (new-num :scs (unsigned-reg)
+                 :load-if (not (and (sc-is num unsigned-stack)
+                                    (sc-is new-num unsigned-stack)
+                                    (location= num new-num)))))
+  (:result-types unsigned-num)
+  (:generator 1
+    (move new-num num)))
+
 (define-vop (bignum-lognot lognot-mod32/word=>unsigned)
   (:translate sb!bignum:%lognot))
 

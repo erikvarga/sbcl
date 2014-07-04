@@ -342,6 +342,9 @@
 (defknown %tagged-word-to-fixnum (word) (and word fixnum)
     (movable foldable flushable))
 
+(defknown %lose-word-derived-type (word) word
+    (movable foldable flushable))
+
 (defknown (mod rem) (real real) real
   (movable foldable flushable explicit-check))
 

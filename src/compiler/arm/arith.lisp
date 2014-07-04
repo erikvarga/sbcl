@@ -632,27 +632,22 @@
   (:arg-types * (:constant (signed-byte 9)))
   (:variant-cost 6))
 
-(macrolet ((define-logtest-vops ()
-             `(progn
-                ,@(loop for suffix in '(/fixnum -c/fixnum
-                                        /signed -c/signed
-                                        /unsigned -c/unsigned)
-                        for cost in '(4 3 6 5 6 5)
-                        collect
-                        `(define-vop (,(symbolicate "FAST-LOGTEST" suffix)
-                                      ,(symbolicate "FAST-CONDITIONAL" suffix))
-                           (:translate logtest)
-                           (:conditional :ne)
-                           (:generator ,cost
-                                       (inst tst x
-                                             ,(case suffix
-                                                (-c/fixnum
-                                                 `(fixnumize y))
-                                                ((-c/signed -c/unsigned)
-                                                 `y)
-                                                (t
-                                                 'y)))))))))
-  (define-logtest-vops))
+(macrolet ((def (name fun arg-type arg-reg res-type res-reg)
+              `(define-vop (,name)
+                 (:translate ,fun)
+                 (:policy :fast-safe)
+                 (:args (arg :scs (,arg-reg) :target res))
+                 (:arg-types ,arg-type)
+                 (:results (res :scs (,res-reg)))
+                 (:result-types ,res-type)
+                 (:generator 1
+                   (move res arg)))))
+  (def fixnum-to-tagged-word %fixnum-to-tagged-word
+    positive-fixnum any-reg unsigned-num unsigned-reg)
+  (def tagged-word-to-fixnum %tagged-word-to-fixnum
+    unsigned-num unsigned-reg positive-fixnum any-reg)
+  (def lose-word-derived-type %lose-word-derived-type
+    unsigned-num unsigned-reg unsigned-num unsigned-reg))
 
 (define-source-transform lognand (x y)
   `(lognot (logand ,x ,y)))
@@ -903,25 +898,22 @@
     (inst smull lo hi x y)
     (inst bic hi hi fixnum-tag-mask)))
 
-(define-vop (fixnum-to-tagged-word)
-  (:translate %fixnum-to-tagged-word)
-  (:policy :fast-safe)
-  (:args (fixnum :scs (any-reg) :target num))
-  (:arg-types positive-fixnum)
-  (:results (num :scs (unsigned-reg)))
-  (:result-types unsigned-num)
-  (:generator 1
-    (move num fixnum)))
-
-(define-vop (tagged-word-to-fixnum)
-  (:translate %tagged-word-to-fixnum)
-  (:policy :fast-safe)
-  (:args (num :scs (unsigned-reg) :target fixnum))
-  (:arg-types unsigned-num)
-  (:results (fixnum :scs (any-reg)))
-  (:result-types positive-fixnum)
-  (:generator 1
-    (move fixnum num)))
+(macrolet ((def (name fun arg-type arg-reg res-type res-reg)
+              `(define-vop (,name)
+                 (:translate ,fun)
+                 (:policy :fast-safe)
+                 (:args (arg :scs (,arg-reg) :target res))
+                 (:arg-types ,arg-type)
+                 (:results (res :scs (,res-reg)))
+                 (:result-types ,res-type)
+                 (:generator 1
+                   (move res arg)))))
+  (def 'fixnum-to-tagged-word '%fixnum-to-tagged-word
+    'positive-fixnum 'any-reg 'unsigned-num 'unsigned-reg)
+  (def 'tagged-word-to-fixnum '%tagged-word-to-fixnum
+    'unsigned-num 'unsigned-reg 'positive-fixnum 'any-reg)
+  (def 'lose-word-derived-type '%lose-word-derived-type
+    'unsigned-num 'unsigned-reg 'unsigned-num 'unsigned-reg))
 
 (define-vop (bignum-lognot lognot-mod32/unsigned=>unsigned)
   (:translate sb!bignum:%lognot))

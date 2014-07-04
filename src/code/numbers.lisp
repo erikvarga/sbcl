@@ -671,6 +671,10 @@
   (declare (type word x))
   (%tagged-word-to-fixnum x))
 
+(defun %lose-word-derived-type (x)
+  (declare (type word x))
+  (%lose-word-derived-type x))
+
 (defun floor (number &optional (divisor 1))
   #!+sb-doc
   "Return the greatest integer not greater than number, or number/divisor.

@@ -291,7 +291,9 @@
                         ,(- (+ shift1 shift2)))))))))))
       (if fixnum-p
           `(%tagged-word-to-fixnum
-            (logandc2 ,expr ,sb!vm:fixnum-tag-mask))
+            (logandc2
+             (%lose-word-derived-type ,expr)
+             ,sb!vm:fixnum-tag-mask))
           expr))))
 
 ;;; The following two asserts show the expected average case and worst case
