@@ -332,54 +332,81 @@
 ;;; Return an expression for calculating the quotient like in the previous
 ;;; function, but the arguments have to fit in signed words.
 ;;; The algorithm is taken from the same paper, Figure 5.2
-(defun gen-signed-div-by-constant-expr (y min-x max-x)
+(defun gen-signed-div-by-constant-expr (y min-x max-x optimize-fixnum-p)
   (declare (type (or (integer #.(- (expt 2 (1- sb!vm:n-word-bits))) -3)
                      (integer 3 #.(expt 2 (1- sb!vm:n-word-bits)))) y)
            (type sb!vm:signed-word min-x max-x))
   (aver (not (zerop (logand (abs y) (1- (abs y))))))
   (aver (<= min-x max-x))
-  (let ((expr
+  (when optimize-fixnum-p (setq max-x (ash max-x sb!vm::n-fixnum-tag-bits)
+                                min-x (ash min-x sb!vm::n-fixnum-tag-bits)))
+  (flet ((shift-back (x)
+           (ash x (- sb!vm::n-fixnum-tag-bits))))
     (let ((n (expt 2 (1- sb!vm:n-word-bits))))
-      (multiple-value-bind (m shift)
-          (choose-multiplier (abs y) (max (abs max-x) (abs min-x)))
-        (cond
-          ((and (< (max (* max-x m) (* min-x m)) n)
-                (>= (min (* max-x m) (* min-x m)) (- n)))
-           `(ash (* num ,m) ,(- shift)))
-          (t
-           (multiple-value-setq (m shift)
-             (get-scaled-multiplier m shift))
-           (cond ((>= m n)
-                  `(ash (truly-the
-                         sb!vm:signed-word
-                         (+ num
-                            (%signed-multiply-high num ,(- m (* 2 n)))))
-                        ,(- shift)))
-                 ((zerop shift)
-                  ;; Determine the range of the quotient before
-                  ;; the negation and subtraction is applied to it
-                  (let ((max (truncate max-x (abs y)))
-                        (min (truncate min-x (abs y))))
-                    (if (minusp y)
-                        (setq max (1+ max))
-                        (setq min (1- min)))
-                    ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
-                    ;; VOP.
-                    `(truly-the (integer ,min ,max)
-                                (%signed-multiply-high num ,m))))
-                 (t
-                  `(ash (%signed-multiply-high num ,m)
-                        ,(- shift))))))))))
-    (setq expr `(- ,expr
-                   (ash num ,(- sb!vm:n-word-bits))))
-    (when (minusp y)
-      (setq expr `(- ,expr)))
-    (let ((max (truncate max-x y))
-          (min (truncate min-x y)))
-      (when (minusp y) (rotatef min max))
-      (setq expr `(let ((num x))
-                    (truly-the (integer ,min ,max)
-                               ,expr))))))
+      (let ((expr
+       (multiple-value-bind (m shift)
+           (choose-multiplier (abs y) (max (abs max-x) (abs min-x)))
+         (when (and
+                optimize-fixnum-p
+                (<  (max (* (shift-back max-x) m) (* (shift-back min-x) m)) n)
+                (>= (min (* (shift-back max-x) m) (* (shift-back min-x) m)) (- n)))
+           ;; Don't optimize for fixnums if we
+           ;; can use direct multiplication
+           (return-from gen-signed-div-by-constant-expr
+             (gen-signed-div-by-constant-expr y
+                                              (shift-back min-x)
+                                              (shift-back max-x)
+                                              nil)))
+         (cond
+           ((and (<  (max (* max-x m) (* min-x m)) n)
+                 (>= (min (* max-x m) (* min-x m)) (- n)))
+            `(ash (* num ,m) ,(- shift)))
+           (t
+            (multiple-value-setq (m shift)
+              (get-scaled-multiplier m shift))
+            (cond ((>= m n)
+                   (when optimize-fixnum-p
+                     ;; Don't optimize for fixnums if it makes us use
+                     ;; N+1-bit multiplication
+                     (return-from gen-signed-div-by-constant-expr
+                       (gen-signed-div-by-constant-expr y
+                                                        (shift-back min-x)
+                                                        (shift-back max-x)
+                                                        nil)))
+                   `(ash (truly-the
+                          sb!vm:signed-word
+                          (+ num
+                             (%signed-multiply-high num ,(- m (* 2 n)))))
+                         ,(- shift)))
+                  (t
+                   `(ash (%signed-multiply-high num ,m)
+                         ,(- shift)))))))))
+        (when optimize-fixnum-p
+          (setq expr `(logandc2
+                       (%lose-signed-word-derived-type ,expr)
+                       ,sb!vm:fixnum-tag-mask)))
+        (let ((x-sign-expr `(ash num ,(- sb!vm:n-word-bits))))
+          (when optimize-fixnum-p
+            (setq x-sign-expr
+                  `(logandc2 (%lose-signed-word-derived-type ,x-sign-expr)
+                             ,sb!vm:fixnum-tag-mask)))
+          (setq expr `(- ,expr ,x-sign-expr)))
+        (when optimize-fixnum-p
+          (setq expr
+                `(truly-the (integer ,(- 1 n) ,(1- n)) ,expr)))
+        (when (minusp y)
+          (setq expr `(- ,expr)))
+        (let ((max (truncate max-x y))
+              (min (truncate min-x y)))
+          (when (minusp y) (rotatef min max))
+          (setq expr
+                (if optimize-fixnum-p
+                    `(let ((num (truly-the (integer ,min-x ,max-x)
+                                           (%fixnum-to-tagged-signed-word x))))
+                       (truly-the (integer ,min ,max)
+                                  (%tagged-signed-word-to-fixnum ,expr)))
+                    `(let ((num x))
+                       (truly-the (integer ,min ,max) ,expr)))))))))
 
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
@@ -389,7 +416,8 @@
   (assert (equal
            (gen-signed-div-by-constant-expr 11
                                             (- (expt 2 (1- sb!vm:n-word-bits)))
-                                            (1- (expt 2 (1- sb!vm:n-word-bits))))
+                                            (1- (expt 2 (1- sb!vm:n-word-bits)))
+                                            nil)
            '(let ((num x))
              (truly-the (integer -195225786 195225786)
               (- (ash (%signed-multiply-high num 780903145) -1)
@@ -397,7 +425,8 @@
   (assert (equal
            (gen-signed-div-by-constant-expr 7
                                             (- (expt 2 (1- sb!vm:n-word-bits)))
-                                            (1- (expt 2 (1- sb!vm:n-word-bits))))
+                                            (1- (expt 2 (1- sb!vm:n-word-bits)))
+                                            nil)
            '(let ((num x))
              (truly-the (integer -306783378 306783378)
               (- (ash
@@ -685,7 +714,12 @@
       (give-up-ir1-transform))
     ;; Use the unsigned transform instead, if we can.
     (unless (or (< y 0) (< min-x 0)) (give-up-ir1-transform))
-    `(let* ((quot ,(gen-signed-div-by-constant-expr y min-x max-x))
+    `(let* ((quot ,(gen-signed-div-by-constant-expr y min-x max-x
+                                                    (and
+                                                     (>= min-x
+                                                         most-negative-fixnum)
+                                                     (<= max-x
+                                                         most-positive-fixnum))))
             (rem (truly-the (integer ,(- 1 (abs y)) ,(- (abs y) 1))
                             (- x (* quot ,y)))))
        (values quot rem))))
