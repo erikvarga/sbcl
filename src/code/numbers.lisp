@@ -675,6 +675,18 @@
   (declare (type word x))
   (%lose-word-derived-type x))
 
+(defun %fixnum-to-tagged-signed-word (x)
+  (declare (type fixnum x))
+  (%fixnum-to-tagged-signed-word x))
+
+(defun %tagged-signed-word-to-fixnum (x)
+  (declare (type sb!vm:signed-word x))
+  (%tagged-signed-word-to-fixnum x))
+
+(defun %lose-signed-word-derived-type (x)
+  (declare (type sb!vm:signed-word x))
+  (%lose-signed-word-derived-type x))
+
 (defun floor (number &optional (divisor 1))
   #!+sb-doc
   "Return the greatest integer not greater than number, or number/divisor.

@@ -345,6 +345,15 @@
 (defknown %lose-word-derived-type (word) word
     (movable foldable flushable))
 
+(defknown %fixnum-to-tagged-signed-word (fixnum) sb!vm:signed-word
+    (movable foldable flushable))
+
+(defknown %tagged-signed-word-to-fixnum (sb!vm:signed-word) fixnum
+    (movable foldable flushable))
+
+(defknown %lose-signed-word-derived-type (sb!vm:signed-word) sb!vm:signed-word
+    (movable foldable flushable))
+
 (defknown (mod rem) (real real) real
   (movable foldable flushable explicit-check))
 

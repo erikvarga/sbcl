@@ -647,7 +647,13 @@
   (def tagged-word-to-fixnum %tagged-word-to-fixnum
     unsigned-num unsigned-reg positive-fixnum any-reg)
   (def lose-word-derived-type %lose-word-derived-type
-    unsigned-num unsigned-reg unsigned-num unsigned-reg))
+    unsigned-num unsigned-reg unsigned-num unsigned-reg)
+  (def fixnum-to-tagged-signed-word %fixnum-to-tagged-signed-word
+    fixnum any-reg signed-num signed-reg)
+  (def tagged-signed-word-to-fixnum %tagged-signed-word-to-fixnum
+    signed-num signed-reg fixnum any-reg)
+  (def lose-signed-word-derived-type %lose-signed-word-derived-type
+    signed-num signed-reg signed-num signed-reg))
 
 (define-source-transform lognand (x y)
   `(lognot (logand ,x ,y)))
