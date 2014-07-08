@@ -246,9 +246,7 @@
   (aver (not (zerop (logand y (1- y)))))
   (flet ((ld (x)
              ;; the floor of the binary logarithm of (positive) X
-             (integer-length (1- x)))
-         (shift-back (x)
-           (ash x (- sb!vm::n-fixnum-tag-bits))))
+             (integer-length (1- x))))
     (let* ((x 'x)
            (n (expt 2 sb!vm:n-word-bits))
            (shift1 0)
@@ -256,14 +254,14 @@
       (multiple-value-bind (m shift2)
           (choose-multiplier y max-x)
         (when optimize-fixnum-p
-          (when (< (* max-x m) n)
-            ;; Don't optimize for fixnums if we
-            ;; can use direct multiplication
-            (return-from gen-unsigned-div-by-constant-expr
-              (gen-unsigned-div-by-constant-expr y max-x nil)))
-          (setq max-x (ash max-x sb!vm::n-fixnum-tag-bits))
-          (setq x `(truly-the (integer 0 ,max-x)
-                              (%fixnum-to-tagged-word x))))
+          (if (< (* max-x m) n)
+              ;; Don't optimize for fixnums if we
+              ;; can use direct multiplication
+              (setq optimize-fixnum-p nil)
+              (setq
+               max-x (ash max-x sb!vm::n-fixnum-tag-bits)
+               x `(truly-the (integer 0 ,max-x)
+                             (%fixnum-to-tagged-word x)))))
         (cond
           ((< (* max-x m) n)
            `(ash (* ,x ,m) ,(- shift2)))
@@ -331,69 +329,60 @@
            (type sb!vm:signed-word min-x max-x))
   (aver (not (zerop (logand (abs y) (1- (abs y))))))
   (aver (<= min-x max-x))
-  (flet ((shift-back (x)
-           (ash x (- sb!vm::n-fixnum-tag-bits))))
-    (let ((n (expt 2 (1- sb!vm:n-word-bits))))
-      (let ((expr
-       (multiple-value-bind (m shift)
-           (choose-multiplier (abs y) (max (abs max-x) (abs min-x)))
-         (when optimize-fixnum-p
-           (setq max-x (ash max-x sb!vm::n-fixnum-tag-bits)
-                 min-x (ash min-x sb!vm::n-fixnum-tag-bits))
-           (when (and
-                  (<  (max (* (shift-back max-x) m)
-                           (* (shift-back min-x) m)) n)
-                  (>= (min (* (shift-back max-x) m)
-                           (* (shift-back min-x) m)) (- n)))
-             ;; Don't optimize for fixnums if we
-             ;; can use direct multiplication
-             (return-from gen-signed-div-by-constant-expr
-               (gen-signed-div-by-constant-expr y
-                                                (shift-back min-x)
-                                                (shift-back max-x)
-                                                nil))))
-         (cond
-           ((and (<  (max (* max-x m) (* min-x m)) n)
-                 (>= (min (* max-x m) (* min-x m)) (- n)))
-            `(ash (* num ,m) ,(- shift)))
-           (t
-            (multiple-value-setq (m shift)
-              (get-scaled-multiplier m shift))
-            (cond ((>= m n)
-                   `(ash (truly-the
-                          sb!vm:signed-word
-                          (+ num
-                             (%signed-multiply-high num ,(- m (* 2 n)))))
-                         ,(- shift)))
-                  (t
-                   `(ash (%signed-multiply-high num ,m)
-                         ,(- shift)))))))))
+  (let ((n (expt 2 (1- sb!vm:n-word-bits))))
+    (let ((expr
+      (multiple-value-bind (m shift)
+          (choose-multiplier (abs y) (max (abs max-x) (abs min-x)))
         (when optimize-fixnum-p
-          (setq expr `(logandc2
-                       (%lose-signed-word-derived-type ,expr)
-                       ,sb!vm:fixnum-tag-mask)))
-        (let ((x-sign-expr `(ash num ,(- sb!vm:n-word-bits))))
-          (when optimize-fixnum-p
-            (setq x-sign-expr
-                  `(logandc2 (%lose-signed-word-derived-type ,x-sign-expr)
-                             ,sb!vm:fixnum-tag-mask)))
-          (setq expr `(- ,expr ,x-sign-expr)))
+          (if (and
+               (<  (* max-x m) n)
+               (>= (* min-x m) (- n)))
+              ;; Don't optimize for fixnums if we
+              ;; can use direct multiplication
+              (setq optimize-fixnum-p nil)
+              (setq max-x (ash max-x sb!vm::n-fixnum-tag-bits)
+                    min-x (ash min-x sb!vm::n-fixnum-tag-bits))))
+        (cond
+          ((and (< (* max-x m) n) (>= (* min-x m) (- n)))
+           `(ash (* num ,m) ,(- shift)))
+          (t
+           (multiple-value-setq (m shift)
+             (get-scaled-multiplier m shift))
+           (cond ((>= m n)
+                  `(ash (truly-the
+                         sb!vm:signed-word
+                         (+ num
+                            (%signed-multiply-high num ,(- m (* 2 n)))))
+                        ,(- shift)))
+                 (t
+                  `(ash (%signed-multiply-high num ,m)
+                        ,(- shift)))))))))
+      (when optimize-fixnum-p
+        (setq expr `(logandc2
+                     (%lose-signed-word-derived-type ,expr)
+                     ,sb!vm:fixnum-tag-mask)))
+      (let ((x-sign-expr `(ash num ,(- sb!vm:n-word-bits))))
         (when optimize-fixnum-p
-          (setq expr
-                `(truly-the (integer ,(- 1 n) ,(1- n)) ,expr)))
-        (when (minusp y)
-          (setq expr `(- ,expr)))
-        (let ((max (truncate max-x y))
-              (min (truncate min-x y)))
-          (when (minusp y) (rotatef min max))
-          (setq expr
-                (if optimize-fixnum-p
-                    `(let ((num (truly-the (integer ,min-x ,max-x)
-                                           (%fixnum-to-tagged-signed-word x))))
-                       (truly-the (integer ,min ,max)
-                                  (%tagged-signed-word-to-fixnum ,expr)))
-                    `(let ((num x))
-                       (truly-the (integer ,min ,max) ,expr)))))))))
+          (setq x-sign-expr
+                `(logandc2 (%lose-signed-word-derived-type ,x-sign-expr)
+                           ,sb!vm:fixnum-tag-mask)))
+        (setq expr `(- ,expr ,x-sign-expr)))
+      (when optimize-fixnum-p
+        (setq expr
+              `(truly-the (integer ,(- 1 n) ,(1- n)) ,expr)))
+      (when (minusp y)
+        (setq expr `(- ,expr)))
+      (let ((max (truncate max-x y))
+            (min (truncate min-x y)))
+        (when (minusp y) (rotatef min max))
+        (setq expr
+              (if optimize-fixnum-p
+                  `(let ((num (truly-the (integer ,min-x ,max-x)
+                                         (%fixnum-to-tagged-signed-word x))))
+                     (truly-the (integer ,min ,max)
+                                (%tagged-signed-word-to-fixnum ,expr)))
+                  `(let ((num x))
+                     (truly-the (integer ,min ,max) ,expr))))))))
 
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
