@@ -249,22 +249,21 @@
              (integer-length (1- x)))
          (shift-back (x)
            (ash x (- sb!vm::n-fixnum-tag-bits))))
-    (when optimize-fixnum-p (setq max-x (ash max-x sb!vm::n-fixnum-tag-bits)))
-    (let* ((x (if optimize-fixnum-p `(truly-the (integer 0 ,max-x)
-                                      (%fixnum-to-tagged-word x))
-                  'x))
+    (let* ((x 'x)
            (n (expt 2 sb!vm:n-word-bits))
            (shift1 0)
            (expr (progn
       (multiple-value-bind (m shift2)
           (choose-multiplier y max-x)
-        (when (and
-               optimize-fixnum-p
-               (< (* (shift-back max-x) m) n))
-          ;; Don't optimize for fixnums if we
-          ;; can use direct multiplication
-          (return-from gen-unsigned-div-by-constant-expr
-            (gen-unsigned-div-by-constant-expr y (shift-back max-x) nil)))
+        (when optimize-fixnum-p
+          (when (< (* max-x m) n)
+            ;; Don't optimize for fixnums if we
+            ;; can use direct multiplication
+            (return-from gen-unsigned-div-by-constant-expr
+              (gen-unsigned-div-by-constant-expr y max-x nil)))
+          (setq max-x (ash max-x sb!vm::n-fixnum-tag-bits))
+          (setq x `(truly-the (integer 0 ,max-x)
+                              (%fixnum-to-tagged-word x))))
         (cond
           ((< (* max-x m) n)
            `(ash (* ,x ,m) ,(- shift2)))
@@ -278,12 +277,6 @@
                  (choose-multiplier (/ y (ash 1 shift1))
                                            (ash max-x (- shift1))))))
            (cond ((>= m n)
-                  (when optimize-fixnum-p
-                    ;; Don't optimize for fixnums if it makes us use
-                    ;; N+1-bit multiplication or multiply-add
-                    (return-from gen-unsigned-div-by-constant-expr
-                      (gen-unsigned-div-by-constant-expr
-                       y (shift-back max-x) nil)))
                   (cond ((< max-x (1- n))
                          (let* ((shift
                                 (+ (integer-length max-x) (integer-length y) -1))
@@ -338,25 +331,27 @@
            (type sb!vm:signed-word min-x max-x))
   (aver (not (zerop (logand (abs y) (1- (abs y))))))
   (aver (<= min-x max-x))
-  (when optimize-fixnum-p (setq max-x (ash max-x sb!vm::n-fixnum-tag-bits)
-                                min-x (ash min-x sb!vm::n-fixnum-tag-bits)))
   (flet ((shift-back (x)
            (ash x (- sb!vm::n-fixnum-tag-bits))))
     (let ((n (expt 2 (1- sb!vm:n-word-bits))))
       (let ((expr
        (multiple-value-bind (m shift)
            (choose-multiplier (abs y) (max (abs max-x) (abs min-x)))
-         (when (and
-                optimize-fixnum-p
-                (<  (max (* (shift-back max-x) m) (* (shift-back min-x) m)) n)
-                (>= (min (* (shift-back max-x) m) (* (shift-back min-x) m)) (- n)))
-           ;; Don't optimize for fixnums if we
-           ;; can use direct multiplication
-           (return-from gen-signed-div-by-constant-expr
-             (gen-signed-div-by-constant-expr y
-                                              (shift-back min-x)
-                                              (shift-back max-x)
-                                              nil)))
+         (when optimize-fixnum-p
+           (setq max-x (ash max-x sb!vm::n-fixnum-tag-bits)
+                 min-x (ash min-x sb!vm::n-fixnum-tag-bits))
+           (when (and
+                  (<  (max (* (shift-back max-x) m)
+                           (* (shift-back min-x) m)) n)
+                  (>= (min (* (shift-back max-x) m)
+                           (* (shift-back min-x) m)) (- n)))
+             ;; Don't optimize for fixnums if we
+             ;; can use direct multiplication
+             (return-from gen-signed-div-by-constant-expr
+               (gen-signed-div-by-constant-expr y
+                                                (shift-back min-x)
+                                                (shift-back max-x)
+                                                nil))))
          (cond
            ((and (<  (max (* max-x m) (* min-x m)) n)
                  (>= (min (* max-x m) (* min-x m)) (- n)))
@@ -365,14 +360,6 @@
             (multiple-value-setq (m shift)
               (get-scaled-multiplier m shift))
             (cond ((>= m n)
-                   (when optimize-fixnum-p
-                     ;; Don't optimize for fixnums if it makes us use
-                     ;; N+1-bit multiplication
-                     (return-from gen-signed-div-by-constant-expr
-                       (gen-signed-div-by-constant-expr y
-                                                        (shift-back min-x)
-                                                        (shift-back max-x)
-                                                        nil)))
                    `(ash (truly-the
                           sb!vm:signed-word
                           (+ num
