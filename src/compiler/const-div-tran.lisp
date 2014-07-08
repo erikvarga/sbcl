@@ -428,18 +428,40 @@
 ;;; It is possible that the function has to use an N+1 bit multiplier that
 ;;; doesn't fit in a word. When the args are unsigned words, this is handled
 ;;; as in the truncate code generator. Otherwise, the function returns NIL.
-(flet ((gen (y min-x max-x choose-multiplier-fun large-y-expr min-quot max-quot)
+(flet ((gen (y min-x max-x
+             choose-multiplier-fun large-y-expr
+             min-quot max-quot
+             optimize-fixnum-p)
   (declare (type (or (integer #.(- (expt 2 (1- sb!vm:n-word-bits))) -3)
                      (integer 3 #.most-positive-word)) y)
            (type (or sb!vm:signed-word word) min-x max-x))
   (aver (<= min-x max-x))
   (aver (not (zerop (logand y (1- y)))))
   (let* ((signed-p (or (minusp min-x) (minusp y)))
-         (n-min (if signed-p (- (expt 2 (1- sb!vm:n-word-bits))) 0))
-         (n-max (expt 2 (- sb!vm:n-word-bits (if signed-p 1 0))))
-         (precision (integer-length (1- (max (abs min-x) (abs max-x)))))
-         (mulhi (if signed-p '%signed-multiply-high '%multiply-high))
-         (positive-product-p (if (plusp y) '(plusp x) '(minusp x)))
+         (n-min (if signed-p
+                    (- (expt 2 (1- sb!vm:n-word-bits)))
+                    0))
+         (n-max (expt 2 (- sb!vm:n-word-bits
+                           (if signed-p 1 0))))
+         (precision (integer-length
+                     (1- (max (abs min-x)
+                              (abs max-x)))))
+         (x 'x)
+         (mulhi (if signed-p
+                    '%signed-multiply-high
+                    '%multiply-high))
+         (fx-to-word (if signed-p
+                         '%fixnum-to-tagged-signed-word
+                         '%fixnum-to-tagged-word))
+         (word-to-fx (if signed-p
+                         '%tagged-signed-word-to-fixnum
+                         '%tagged-word-to-fixnum))
+         (lose-type (if signed-p
+                         '%lose-signed-word-derived-type
+                         '%lose-word-derived-type))
+         (positive-product-p (if (plusp y)
+                                 '(plusp x)
+                                 '(minusp x)))
          (neg-m) (pos-m) (neg-shift) (pos-shift))
     (multiple-value-setq (neg-m neg-shift)
       (funcall choose-multiplier-fun (abs y) precision t))
@@ -451,6 +473,17 @@
     (when (and (<= (* y min-x) 0) (<= (* y max-x) 0))
       (setq pos-m neg-m)
       (setq pos-shift neg-shift))
+    (when optimize-fixnum-p
+      (if (and (< (* max-x (max pos-m neg-m)) n-max)
+                 (>= (* min-x (max pos-m neg-m)) n-min))
+        ;; Don't optimize for fixnums if we
+        ;; can use direct multiplication
+        (setq optimize-fixnum-p nil)
+        (setq
+         max-x (ash max-x sb!vm::n-fixnum-tag-bits)
+         min-x (ash min-x sb!vm::n-fixnum-tag-bits)
+         x `(truly-the (integer ,min-x ,max-x)
+                       (,fx-to-word x)))))
     (let* ((shift `(if ,positive-product-p ,(- pos-shift) ,(- neg-shift)))
            (m `(if ,positive-product-p
                    ,(* (signum y) pos-m)
@@ -461,10 +494,11 @@
                ;; When Y is above 2^(W-1), there are only a few
                ;; possible results, and we can use comparisons
                ;; to determine the correct one.
+               (setq optimize-fixnum-p nil)
                large-y-expr)
               ((and (< (* max-x (max pos-m neg-m)) n-max)
                     (>= (* min-x (max pos-m neg-m)) n-min))
-               `(ash (* x ,m) ,shift))
+               `(ash (* ,x ,m) ,shift))
               (t
                (multiple-value-setq (pos-m pos-shift)
                  (get-scaled-multiplier pos-m pos-shift))
@@ -485,20 +519,23 @@
                                (ash ,(word `(+ t1 (ash ,(word `(- num t1))
                                                        -1)))
                                     ,(- 1 pos-shift))))))
-                     ((and (zerop pos-shift) (zerop neg-shift))
-                      `(,mulhi x ,m))
                      (t
-                      `(ash (,mulhi x ,m)
+                      `(ash (,mulhi ,x ,m)
                             ,shift)))))))
       (if expr
           `(truly-the (integer ,min-quot ,max-quot)
-                      ,expr)
+                      ,(if optimize-fixnum-p
+                           `(,word-to-fx (logandc2
+                                          (,lose-type ,expr)
+                                          ,sb!vm:fixnum-tag-mask))
+                           expr))
           nil)))))
-  (defun gen-ceilinged-div-by-constant-expr (y min-x max-x)
+  (defun gen-ceilinged-div-by-constant-expr (y min-x max-x optimize-fixnum-p)
     (let ((min (1- (ceiling min-x y)))
           (max (1- (ceiling max-x y))))
       (when (minusp y) (rotatef min max))
-      (gen y min-x max-x 'choose-ceiling-multiplier
+      (gen y min-x max-x
+           'choose-ceiling-multiplier
            (if (plusp y)
                `(cond ((> x ,y) 1)
                       ((>= x 0) 0)
@@ -508,12 +545,14 @@
                       ((<= x 0) 0)
                       ((< x ,(- y)) -1)
                       (t -2)))
-         min max)))
-  (defun gen-floored-div-by-constant-expr (y min-x max-x)
+           min max
+           optimize-fixnum-p)))
+  (defun gen-floored-div-by-constant-expr (y min-x max-x optimize-fixnum-p)
     (let ((min (floor min-x y))
           (max (floor max-x y)))
       (when (minusp y) (rotatef min max))
-      (gen y min-x max-x 'choose-floor-multiplier
+      (gen y min-x max-x
+           'choose-floor-multiplier
            (if (plusp y)
                `(cond ((>= x ,y) 1)
                       ((>= x 0) 0)
@@ -523,7 +562,8 @@
                       ((<= x 0) 0)
                       ((<= x ,(- y)) -1)
                       (t -2)))
-         min max))))
+           min max
+           optimize-fixnum-p))))
 
 ;;; The following asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
@@ -533,7 +573,8 @@
   ;; unsigned ceiling:
   (assert (equal
            (gen-ceilinged-div-by-constant-expr 7 0
-                                               (1- (expt 2 sb!vm:n-word-bits)))
+                                               (1- (expt 2 sb!vm:n-word-bits))
+                                               nil)
            '(truly-the (integer -1 613566756)
              (ash
               (%multiply-high x
@@ -547,7 +588,8 @@
                   -1)))))
   (assert (equal
            (gen-ceilinged-div-by-constant-expr 11 0
-                                               (1- (expt 2 sb!vm:n-word-bits)))
+                                               (1- (expt 2 sb!vm:n-word-bits))
+                                               nil)
            '(truly-the (integer -1 390451572)
              (let* ((num x) (t1 (%multiply-high num 1952257861)))
                (ash (truly-the word (+ t1 (ash (truly-the word (- num t1)) -1)))
@@ -556,7 +598,8 @@
   (assert (equal
            (gen-ceilinged-div-by-constant-expr 5
                                      (- (expt 2 (1- sb!vm:n-word-bits)))
-                                     (1- (expt 2 (1- sb!vm:n-word-bits))))
+                                     (1- (expt 2 (1- sb!vm:n-word-bits)))
+                                     nil)
            '(truly-the (integer -429496730 429496729)
              (ash
               (%signed-multiply-high x
@@ -569,12 +612,14 @@
   (assert (equal
            (gen-ceilinged-div-by-constant-expr 7
                                      (- (expt 2 (1- sb!vm:n-word-bits)))
-                                     (1- (expt 2 (1- sb!vm:n-word-bits))))
+                                     (1- (expt 2 (1- sb!vm:n-word-bits)))
+                                     nil)
            nil))
   ;; unsigned floor:
   (assert (equal
            (gen-floored-div-by-constant-expr 11 0
-                                               (1- (expt 2 sb!vm:n-word-bits)))
+                                               (1- (expt 2 sb!vm:n-word-bits))
+                                               nil)
            '(truly-the (integer 0 390451572)
              (ash
               (%multiply-high x
@@ -588,7 +633,8 @@
                   -3)))))
   (assert (equal
            (gen-floored-div-by-constant-expr 7 0
-                                               (1- (expt 2 sb!vm:n-word-bits)))
+                                               (1- (expt 2 sb!vm:n-word-bits))
+                                               nil)
            '(truly-the (integer 0 613566756)
              (let* ((num x) (t1 (%multiply-high num 613566757)))
                (ash (truly-the word (+ t1 (ash (truly-the word (- num t1)) -1)))
@@ -597,7 +643,8 @@
   (assert (equal
            (gen-floored-div-by-constant-expr 5
                                      (- (expt 2 (1- sb!vm:n-word-bits)))
-                                     (1- (expt 2 (1- sb!vm:n-word-bits))))
+                                     (1- (expt 2 (1- sb!vm:n-word-bits)))
+                                     nil)
            '(truly-the (integer -429496730 429496729)
              (ash
               (%signed-multiply-high x
@@ -610,7 +657,8 @@
   (assert (equal
            (gen-floored-div-by-constant-expr 7
                                      (- (expt 2 (1- sb!vm:n-word-bits)))
-                                     (1- (expt 2 (1- sb!vm:n-word-bits))))
+                                     (1- (expt 2 (1- sb!vm:n-word-bits)))
+                                     nil)
            nil)))
 
 ;;; If the divisor is constant and both args are positive and fit in a
@@ -658,7 +706,8 @@
          ;; the generated expression is only correct when X isn't 0
          ;; so we have to handle that case separately
          (values 0 0)
-         (let* ((quot ,(gen-ceilinged-div-by-constant-expr y 0 max-x))
+         (let* ((quot ,(gen-ceilinged-div-by-constant-expr y 0 max-x
+                                     (<= max-x most-positive-fixnum)))
                 (rem (truly-the (integer ,(- 1 y) 0)
                             (- (truly-the (integer 1 ,y)
                                           (- x
@@ -690,12 +739,13 @@
       (give-up-ir1-transform))
     ;; Use the unsigned transform instead, if we can.
     (unless (or (< y 0) (< min-x 0)) (give-up-ir1-transform))
-    `(let* ((quot ,(gen-signed-div-by-constant-expr y min-x max-x
-                                                    (and
-                                                     (>= min-x
-                                                         most-negative-fixnum)
-                                                     (<= max-x
-                                                         most-positive-fixnum))))
+    `(let* ((quot ,(gen-signed-div-by-constant-expr
+                    y min-x max-x
+                    (and
+                     (>= min-x
+                         most-negative-fixnum)
+                     (<= max-x
+                         most-positive-fixnum))))
             (rem (truly-the (integer ,(- 1 (abs y)) ,(- (abs y) 1))
                             (- x (* quot ,y)))))
        (values quot rem))))
@@ -726,7 +776,13 @@
     (when (and (>= min-x 0) (<= max-x most-positive-word)
                (typep y 'word))
       (give-up-ir1-transform))
-    (let ((quot-expr (gen-ceilinged-div-by-constant-expr y min-x max-x))
+    (let ((quot-expr (gen-ceilinged-div-by-constant-expr
+                      y min-x max-x
+                      (and
+                       (>= min-x
+                           most-negative-fixnum)
+                       (<= max-x
+                           most-positive-fixnum))))
           (positive-p (if (plusp y) '(plusp x) '(minusp x)))
           (quot-min (ceiling min-x y))
           (quot-max (ceiling max-x y)))
@@ -779,7 +835,13 @@
     (when (and (>= min-x 0) (<= max-x most-positive-word)
                (typep y 'word))
       (give-up-ir1-transform))
-    (let ((quot-expr (gen-floored-div-by-constant-expr y min-x max-x))
+    (let ((quot-expr (gen-floored-div-by-constant-expr
+                      y min-x max-x
+                      (and
+                       (>= min-x
+                           most-negative-fixnum)
+                       (<= max-x
+                           most-positive-fixnum))))
           (negative-p (if (plusp y) '(minusp x) '(plusp x)))
           (quot-min (floor min-x y))
           (quot-max (floor max-x y)))
