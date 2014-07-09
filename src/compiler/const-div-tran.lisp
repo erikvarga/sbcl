@@ -260,11 +260,10 @@
               (setq optimize-fixnum-p nil)
               (setq
                max-x (ash max-x sb!vm::n-fixnum-tag-bits)
-               x `(truly-the (integer 0 ,max-x)
-                             (%fixnum-to-tagged-word x)))))
+               x `(%fixnum-to-tagged-word x))))
         (cond
           ((< (* max-x m) n)
-           `(ash (* ,x ,m) ,(- shift2)))
+           `(ash (* x ,m) ,(- shift2)))
           (t
            (multiple-value-setq (m shift2)
              (get-scaled-multiplier m shift2))
@@ -274,30 +273,27 @@
                (multiple-value-call 'get-scaled-multiplier
                  (choose-multiplier (/ y (ash 1 shift1))
                                            (ash max-x (- shift1))))))
-           (cond ((>= m n)
-                  (cond ((< max-x (1- n))
-                         (let* ((shift
-                                (+ (integer-length max-x) (integer-length y) -1))
-                                (m (floor (ash 1 shift) y)))
-                           (cond ((< (* (1+ max-x) m) n)
-                                  `(ash (* (+1 ,x) ,m) ,(- shift)))
-                                 (t
-                                  (let ((scale
-                                         (max 0 (- sb!vm:n-word-bits shift))))
-                                    `(ash (%multiply-high (1+ ,x)
-                                                          ,(ash m scale))
-                                          ,(- sb!vm:n-word-bits shift scale)))))))
-                        (t
-                         (flet ((word (x)
-                                  `(truly-the word ,x)))
-                           `(let* ((num ,x)
-                                   (t1 (%multiply-high num ,(- m n))))
-                              (ash ,(word `(+ t1 (ash ,(word `(- num t1))
-                                                      -1)))
-                                   ,(- 1 shift2)))))))
-                 (t
-                  `(ash (%multiply-high (logandc2 ,x ,(1- (ash 1 shift1))) ,m)
-                        ,(- (+ shift1 shift2)))))))))))
+           (if (>= m n)
+               (if (< max-x (1- n))
+                   (let* ((shift
+                           (+ (integer-length max-x) (integer-length y) -1))
+                          (m (floor (ash 1 shift) y)))
+                     (if (< (* (1+ max-x) m) n)
+                         `(ash (* (+1 x) ,m) ,(- shift))
+                         (let ((scale
+                                (max 0 (- sb!vm:n-word-bits shift))))
+                           `(ash (%multiply-high (1+ x)
+                                                 ,(ash m scale))
+                                 ,(- sb!vm:n-word-bits shift scale)))))
+                   (flet ((word (x)
+                            `(truly-the word ,x)))
+                     `(let* ((num x)
+                             (t1 (%multiply-high num ,(- m n))))
+                        (ash ,(word `(+ t1 (ash ,(word `(- num t1))
+                                                -1)))
+                             ,(- 1 shift2)))))
+               `(ash (%multiply-high (logandc2 ,x ,(1- (ash 1 shift1))) ,m)
+                     ,(- (+ shift1 shift2))))))))))
       (if optimize-fixnum-p
           `(%tagged-word-to-fixnum
             (logandc2
@@ -348,15 +344,14 @@
           (t
            (multiple-value-setq (m shift)
              (get-scaled-multiplier m shift))
-           (cond ((>= m n)
-                  `(ash (truly-the
-                         sb!vm:signed-word
-                         (+ num
-                            (%signed-multiply-high num ,(- m (* 2 n)))))
-                        ,(- shift)))
-                 (t
-                  `(ash (%signed-multiply-high num ,m)
-                        ,(- shift)))))))))
+           (if (>= m n)
+               `(ash (truly-the
+                      sb!vm:signed-word
+                      (+ num
+                         (%signed-multiply-high num ,(- m (* 2 n)))))
+                     ,(- shift))
+               `(ash (%signed-multiply-high num ,m)
+                     ,(- shift))))))))
       (when optimize-fixnum-p
         (setq expr `(logandc2
                      (%lose-signed-word-derived-type ,expr)
@@ -375,14 +370,12 @@
       (let ((max (truncate max-x y))
             (min (truncate min-x y)))
         (when (minusp y) (rotatef min max))
-        (setq expr
-              (if optimize-fixnum-p
-                  `(let ((num (truly-the (integer ,min-x ,max-x)
-                                         (%fixnum-to-tagged-signed-word x))))
-                     (truly-the (integer ,min ,max)
-                                (%tagged-signed-word-to-fixnum ,expr)))
-                  `(let ((num x))
-                     (truly-the (integer ,min ,max) ,expr))))))))
+        (if optimize-fixnum-p
+            `(let ((num (%fixnum-to-tagged-signed-word x)))
+               (truly-the (integer ,min ,max)
+                          (%tagged-signed-word-to-fixnum ,expr)))
+            `(let ((num x))
+               (truly-the (integer ,min ,max) ,expr)))))))
 
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
@@ -468,11 +461,11 @@
     (multiple-value-setq (pos-m pos-shift)
       (funcall choose-multiplier-fun (abs y) precision nil))
     (when (and (>= (* y min-x) 0) (>= (* y max-x) 0))
-      (setq neg-m pos-m)
-      (setq neg-shift pos-shift))
+      (setq neg-m pos-m
+            neg-shift pos-shift))
     (when (and (<= (* y min-x) 0) (<= (* y max-x) 0))
-      (setq pos-m neg-m)
-      (setq pos-shift neg-shift))
+      (setq pos-m neg-m
+            pos-shift neg-shift))
     (when optimize-fixnum-p
       (if (and (< (* max-x (max pos-m neg-m)) n-max)
                  (>= (* min-x (max pos-m neg-m)) n-min))
@@ -482,8 +475,7 @@
         (setq
          max-x (ash max-x sb!vm::n-fixnum-tag-bits)
          min-x (ash min-x sb!vm::n-fixnum-tag-bits)
-         x `(truly-the (integer ,min-x ,max-x)
-                       (,fx-to-word x)))))
+         x `(,fx-to-word x))))
     (let* ((shift `(if ,positive-product-p ,(- pos-shift) ,(- neg-shift)))
            (m `(if ,positive-product-p
                    ,(* (signum y) pos-m)
@@ -498,7 +490,7 @@
                large-y-expr)
               ((and (< (* max-x (max pos-m neg-m)) n-max)
                     (>= (* min-x (max pos-m neg-m)) n-min))
-               `(ash (* ,x ,m) ,shift))
+               `(ash (* x ,m) ,shift))
               (t
                (multiple-value-setq (pos-m pos-shift)
                  (get-scaled-multiplier pos-m pos-shift))
@@ -508,20 +500,19 @@
                      m `(if ,positive-product-p
                             ,(* (signum y) pos-m)
                             ,(* (signum y) neg-m)))
-               (cond ((or (>= (max pos-m neg-m) n-max)
-                          (< (min pos-m neg-m) n-min))
-                      (if signed-p
-                          nil
-                          (flet ((word (x)
-                                   `(truly-the word ,x)))
-                            `(let* ((num x)
-                                    (t1 (,mulhi num ,(- pos-m n-max))))
-                               (ash ,(word `(+ t1 (ash ,(word `(- num t1))
-                                                       -1)))
-                                    ,(- 1 pos-shift))))))
-                     (t
-                      `(ash (,mulhi ,x ,m)
-                            ,shift)))))))
+               (if (or (>= (max pos-m neg-m) n-max)
+                       (< (min pos-m neg-m) n-min))
+                   (if signed-p
+                       nil
+                       (flet ((word (x)
+                                `(truly-the word ,x)))
+                         `(let* ((num x)
+                                 (t1 (,mulhi num ,(- pos-m n-max))))
+                            (ash ,(word `(+ t1 (ash ,(word `(- num t1))
+                                                    -1)))
+                                 ,(- 1 pos-shift)))))
+                   `(ash (,mulhi ,x ,m)
+                         ,shift))))))
       (if expr
           `(truly-the (integer ,min-quot ,max-quot)
                       ,(if optimize-fixnum-p
