@@ -433,17 +433,20 @@
                (< m n-min))
            (flet ((word (x)
                     `(truly-the ,(if signed-p 'sb!vm:signed-word 'word) ,x)))
-             `(let* ((num x)
-                     (t1 (,mulhi-fun num
-                                     ,(if (plusp m)
-                                          (- m (expt 2 sb!vm:n-word-bits))
-                                          (+ m (expt 2 sb!vm:n-word-bits))))))
-                (ash ,(if (plusp m)
-                          (word `(+ t1 (ash ,(word `(- num t1))
+             (if signed-p
+                 `(let ((num x))
+                    (ash
+                     ,(if (plusp m)
+                          `(+ (,mulhi-fun num ,(- m (expt 2 sb!vm:n-word-bits)))
+                              num)
+                          `(- (,mulhi-fun num ,(+ m (expt 2 sb!vm:n-word-bits)))
+                              num))
+                     ,(- shift)))
+                 `(let* ((num x)
+                         (t1 (,mulhi-fun num ,(- m (expt 2 sb!vm:n-word-bits)))))
+                    (ash ,(word `(+ t1 (ash ,(word `(- num t1))
                                             -1)))
-                          (word `(ash ,(word `(- t1 num))
-                                      -1)))
-                     ,(- 1 shift))))
+                         ,(- 1 shift)))))
            (let ((fx-to-word (if signed-p
                                  '%fixnum-to-tagged-signed-word
                                  '%fixnum-to-tagged-word))
@@ -486,17 +489,21 @@
            (funcall choose-multiplier-fun y precision -1))
          (multiple-value-setq (pos-m pos-shift)
            (funcall choose-multiplier-fun y precision 1))
-         (when (and (>= (* y min-x) 0) (>= (* y max-x) 0))
+         (when (and (>= min-x 0) (>= max-x 0))
            (setq neg-m pos-m
                  neg-shift pos-shift
                  x-comp-expr t))
-         (when (and (<= (* y min-x) 0) (<= (* y max-x) 0))
+         (when (and (<= min-x 0) (<= max-x 0))
            (setq pos-m neg-m
                  pos-shift neg-shift
                  x-comp-expr nil))
          (when optimize-fixnum-p
-           (if (and (< (* max-x (max pos-m neg-m)) n-max)
-                    (>= (* min-x (max pos-m neg-m)) n-min))
+           (if
+            (if (plusp y)
+                (and (< (* max-x (max pos-m neg-m)) n-max)
+                     (>= (* min-x (min pos-m neg-m)) n-min))
+                (and (< (* min-x (min pos-m neg-m)) n-max)
+                     (>= (* max-x (max pos-m neg-m)) n-min)))
                ;; Don't optimize for fixnums if we
                ;; can use direct multiplication
                (setq optimize-fixnum-p nil)
@@ -572,7 +579,7 @@
            optimize-fixnum-p))))
 
 ;;; The following asserts show the expected average case and worst case
-;;; with respect to the complexity of the generated expression of the previous,
+;;; with respect to the complexity of the generated expression of the previous
 ;;; function for both signed and unsigned words, under a word size of 32 bits:
 #+sb-xc-host
 (when (= sb!vm:n-word-bits 32)
@@ -619,15 +626,8 @@
            '(truly-the (integer -306783379 306783378)
              (if (plusp x)
                  (ash (%signed-multiply-high x 1227133513) -1)
-                 (let* ((num x)
-                        (t1 (%signed-multiply-high num -1840700269)))
-                   (ash
-                    (truly-the sb-vm:signed-word
-                               (+ t1
-                                  (ash (truly-the sb-vm:signed-word
-                                                  (- num t1))
-                                       -1)))
-                    -1))))))
+                 (let ((num x))
+                   (ash (+ (%signed-multiply-high num -1840700269) num) -2))))))
   ;; unsigned floor:
   (assert (equal
            (gen-floored-div-by-constant-expr 11 0
@@ -674,14 +674,8 @@
                                      nil)
            '(truly-the (integer -306783379 306783378)
              (if (plusp x)
-                 (let* ((num x)
-                        (t1 (%signed-multiply-high num -1840700269)))
-                   (ash (truly-the sb-vm:signed-word
-                                   (+ t1
-                                      (ash (truly-the sb-vm:signed-word
-                                                      (- num t1))
-                                           -1)))
-                        -1))
+                 (let ((num x))
+                   (ash (+ (%signed-multiply-high num -1840700269) num) -2))
                  (ash (%signed-multiply-high x 1227133513) -1))))))
 
 ;;; If the divisor is constant and both args are positive and fit in a
