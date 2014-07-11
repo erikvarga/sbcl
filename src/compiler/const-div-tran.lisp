@@ -843,6 +843,9 @@
          (min-x  (or (and (numeric-type-p x-type)
                           (numeric-type-low x-type))
                      (- (expt 2 (1- sb!vm:n-word-bits))))))
+    ;; Attempt to use this transform causes an error during
+    ;; compilation for some reason
+    #+sb-xc-host (give-up-ir1-transform)
     ;; Division by zero, one or powers of two is handled elsewhere.
     (when (zerop (logand (abs y) (1- (abs y))))
       (give-up-ir1-transform))
