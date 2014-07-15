@@ -739,29 +739,6 @@
     (inst srl lo 32 hi)
     (inst mskll lo 4 lo)))
 
-(macrolet ((def (name fun arg-type arg-reg res-type res-reg)
-              `(define-vop (,name)
-                 (:translate ,fun)
-                 (:policy :fast-safe)
-                 (:args (arg :scs (,arg-reg) :target res))
-                 (:arg-types ,arg-type)
-                 (:results (res :scs (,res-reg)))
-                 (:result-types ,res-type)
-                 (:generator 1
-                   (move res arg)))))
-  (def fixnum-to-tagged-word %fixnum-to-tagged-word
-    positive-fixnum any-reg unsigned-num unsigned-reg)
-  (def tagged-word-to-fixnum %tagged-word-to-fixnum
-    unsigned-num unsigned-reg positive-fixnum any-reg)
-  (def lose-word-derived-type %lose-word-derived-type
-    unsigned-num unsigned-reg unsigned-num unsigned-reg)
-  (def fixnum-to-tagged-signed-word %fixnum-to-tagged-signed-word
-    fixnum any-reg signed-num signed-reg)
-  (def tagged-signed-word-to-fixnum %tagged-signed-word-to-fixnum
-    signed-num signed-reg fixnum any-reg)
-  (def lose-signed-word-derived-type %lose-signed-word-derived-type
-    signed-num signed-reg signed-num signed-reg))
-
 (define-vop (bignum-lognot)
   (:translate sb!bignum:%lognot)
   (:policy :fast-safe)

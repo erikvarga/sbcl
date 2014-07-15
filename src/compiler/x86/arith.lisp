@@ -1841,57 +1841,6 @@ constant shift greater than word length")))
     (unless (zerop shift) (inst sar result (min 31 shift)))
     (inst and result (lognot fixnum-tag-mask))))
 
-(macrolet ((def (name fun res-reg res-stack res-type arg-type)
-  `(define-vop (,name)
-     (:translate ,fun)
-     (:policy :fast-safe)
-     (:args (fixnum :scs (any-reg control-stack) :target num))
-     (:arg-types ,arg-type)
-     (:results (num :scs (,res-reg)
-                    :load-if (not (and (sc-is fixnum control-stack)
-                                       (sc-is num ,res-stack)
-                                       (location= fixnum num)))))
-     (:result-types ,res-type)
-     (:generator 1
-       (move num fixnum)))))
-  (def fixnum-to-tagged-word %fixnum-to-tagged-word
-    unsigned-reg unsigned-stack unsigned-num positive-fixnum)
-  (def fixnum-to-tagged-signed-word %fixnum-to-tagged-signed-word
-    signed-reg signed-stack signed-num fixnum))
-
-(macrolet ((def (name fun arg-reg arg-type res-type)
-  `(define-vop (,name)
-     (:translate ,fun)
-     (:policy :fast-safe)
-     (:args (num :scs (,arg-reg) :target fixnum))
-     (:arg-types ,arg-type)
-     (:results (fixnum :scs (any-reg)))
-     (:result-types ,res-type)
-     (:generator 1
-       (move fixnum num)))))
-  (def tagged-word-to-fixnum %tagged-word-to-fixnum
-    unsigned-reg unsigned-num positive-fixnum)
-  (def tagged-signed-word-to-fixnum %tagged-signed-word-to-fixnum
-    signed-reg signed-num fixnum))
-
-(macrolet ((def (name fun reg stack type)
-  `(define-vop (,name)
-     (:translate ,fun)
-     (:policy :fast-safe)
-     (:args (num :scs (,reg ,stack) :target new-num))
-     (:arg-types ,type)
-     (:results (new-num :scs (,reg)
-                        :load-if (not (and (sc-is num ,stack)
-                                           (sc-is new-num ,stack)
-                                           (location= num new-num)))))
-     (:result-types ,type)
-     (:generator 1
-       (move new-num num)))))
-  (def lose-word-derived-type %lose-word-derived-type
-    unsigned-reg unsigned-stack unsigned-num)
-  (def lose-signed-word-derived-type %lose-signed-word-derived-type
-    signed-reg signed-stack signed-num))
-
 (define-vop (bignum-lognot lognot-mod32/word=>unsigned)
   (:translate sb!bignum:%lognot))
 
