@@ -336,6 +336,14 @@
     sb!vm:signed-word
     (movable foldable flushable))
 
+(defknown %multiply-high-and-shift (word word word) word
+    (movable foldable flushable))
+
+(defknown %signed-multiply-high-and-shift
+    (sb!vm:signed-word sb!vm:signed-word word)
+    sb!vm:signed-word
+    (movable foldable flushable))
+
 (defknown %fixnum-to-tagged-word ((and word fixnum)) word
     (movable foldable flushable))
 

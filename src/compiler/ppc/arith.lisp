@@ -1221,6 +1221,102 @@
     (inst lr mask fixnum-tag-mask)
     (inst andc hi temp mask)))
 
+#!+multiply-high-vops
+(define-vop (mulhi-shift)
+  (:translate %multiply-high-and-shift)
+  (:policy :fast-safe)
+  (:args (x :scs (unsigned-reg))
+         (y :scs (unsigned-reg))
+         (shift :scs (unsigned-reg)))
+  (:arg-types unsigned-num unsigned-num unsigned-num)
+  (:temporary (:sc non-descriptor-reg :from :eval :to :result) temp)
+  (:results (result :scs (unsigned-reg)))
+  (:result-types unsigned-num)
+  (:generator 21
+    (inst mulhwu temp x y)
+    (inst srw result temp shift)))
+
+#!+multiply-high-vops
+(define-vop (mulhi-shift/c)
+  (:translate %multiply-high-and-shift)
+  (:policy :fast-safe)
+  (:args (x :scs (unsigned-reg))
+         (y :scs (unsigned-reg)))
+  (:arg-types unsigned-num unsigned-num (:constant word))
+  (:info shift)
+  (:temporary (:sc non-descriptor-reg :from :eval :to :result) temp)
+  (:results (result :scs (unsigned-reg)))
+  (:result-types unsigned-num)
+  (:generator 21
+    (inst mulhwu temp x y)
+    (inst srwi result temp (min 31 shift))))
+
+#!+multiply-high-vops
+(define-vop (mulhi-shift/c/fx)
+  (:translate %multiply-high-and-shift)
+  (:policy :fast-safe)
+  (:args (x :scs (any-reg))
+         (y :scs (unsigned-reg)))
+  (:arg-types positive-fixnum unsigned-num (:constant word))
+  (:info shift)
+  (:temporary (:sc non-descriptor-reg :from :eval :to :result) temp)
+  (:temporary (:sc non-descriptor-reg :from :eval :to :result) mask)
+  (:results (result :scs (any-reg)))
+  (:result-types positive-fixnum)
+  (:generator 16
+    (inst mulhwu temp x y)
+    (inst srwi temp temp (min 31 shift))
+    (inst lr mask fixnum-tag-mask)
+    (inst andc result temp mask)))
+
+#!+multiply-high-vops
+(define-vop (smulhi-shift)
+  (:translate %signed-multiply-high-and-shift)
+  (:policy :fast-safe)
+  (:args (x :scs (signed-reg))
+         (y :scs (signed-reg))
+         (shift :scs (unsigned-reg)))
+  (:arg-types signed-num signed-num unsigned-num)
+  (:temporary (:sc non-descriptor-reg :from :eval :to :result) temp)
+  (:results (result :scs (signed-reg)))
+  (:result-types signed-num)
+  (:generator 21
+    (inst mulhw temp x y)
+    (inst sraw result temp shift)))
+
+#!+multiply-high-vops
+(define-vop (smulhi-shift/c)
+  (:translate %signed-multiply-high-and-shift)
+  (:policy :fast-safe)
+  (:args (x :scs (signed-reg))
+         (y :scs (signed-reg)))
+  (:arg-types signed-num signed-num (:constant word))
+  (:info shift)
+  (:temporary (:sc non-descriptor-reg :from :eval :to :result) temp)
+  (:results (result :scs (signed-reg)))
+  (:result-types signed-num)
+  (:generator 21
+    (inst mulhw temp x y)
+    (inst srawi result temp (min 31 shift))))
+
+#!+multiply-high-vops
+(define-vop (smulhi-shift/c/fx)
+  (:translate %signed-multiply-high-and-shift)
+  (:policy :fast-safe)
+  (:args (x :scs (any-reg))
+         (y :scs (signed-reg)))
+  (:arg-types fixnum signed-num (:constant word))
+  (:info shift)
+  (:temporary (:sc non-descriptor-reg :from :eval :to :result) temp)
+  (:temporary (:sc non-descriptor-reg :from :eval :to :result) mask)
+  (:results (result :scs (any-reg)))
+  (:result-types fixnum)
+  (:generator 16
+    (inst mulhw temp x y)
+    (inst srawi temp temp (min 31 shift))
+    (inst lr mask fixnum-tag-mask)
+    (inst andc result temp mask)))
+
 (macrolet ((def (name fun arg-type arg-reg res-type res-reg)
               `(define-vop (,name)
                  (:translate ,fun)
