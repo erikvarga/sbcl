@@ -157,12 +157,13 @@
 ;;;; converting division to multiplication, addition, shift, etc.
 
 ;;; Get the multipy and shift value that can be used instead of
-;;; dividing by y. Used in gen-(un)signed-div-by-constant-expr.
-(defun choose-multiplier (y max-x)
+;;; multiplying by a/y. Used in gen-(un)signed-div-by-constant-expr
+;;; and gen-unsigned-mul-by-frac-expr.
+(defun choose-multiplier (a y max-x)
   (let* ((max-shift (+ (integer-length max-x) (integer-length y)))
-         (scale (ash 1 max-shift))
+         (scale (ash a max-shift))
          (low (floor scale y))
-         (k (1- (ceiling scale max-x)))
+         (k (1- (ceiling (ash 1 max-shift) max-x)))
          (high (floor (+ scale k) y))
          (diff (logxor low high))
          (delta (1- (integer-length diff))))
@@ -254,7 +255,7 @@
     (let* ((n (expt 2 sb!vm:n-word-bits))
            (shift1 0))
       (multiple-value-bind (m shift2)
-          (choose-multiplier y max-x)
+          (choose-multiplier 1 y max-x)
         (cond
           ((< (* max-x m) n)
            `(ash (* x ,m) ,(- shift2)))
@@ -265,8 +266,8 @@
              (setq shift1 (ld (logand y (- y))))
              (multiple-value-setq (m shift2)
                (multiple-value-call 'get-scaled-multiplier
-                 (choose-multiplier (/ y (ash 1 shift1))
-                                           (ash max-x (- shift1))))))
+                 (choose-multiplier 1 (/ y (ash 1 shift1))
+                                    (ash max-x (- shift1))))))
            (if (>= m n)
                (if (< max-x (1- n))
                    (let* ((shift
@@ -310,6 +311,43 @@
                      (+ t1 (ash (truly-the word (- num t1)) -1)))
                     -2)))))
 
+(defun gen-unsigned-mul-by-frac-expr (a y max-x)
+  (declare (type word a y max-x))
+  (unless (< a y) (return-from gen-unsigned-mul-by-frac-expr nil))
+  (let ((divisor 1))
+    (multiple-value-bind (m shift)
+        (choose-multiplier a y max-x)
+      (when (and (> (integer-length m) (1+ sb!vm:n-word-bits)) (evenp y))
+        (let ((scale (logand y (- y))))
+          (when (< a scale)
+            (setq divisor (/ y scale)
+                  m a
+                  shift (1- (integer-length scale))
+                  y scale))))
+      (let* ((m-bits (integer-length m))
+             (n (expt 2 sb!vm:n-word-bits))
+             (expr
+              (cond ((> m-bits (1+ sb!vm:n-word-bits))
+                     `(ash (* x ,m) ,(- shift)))
+                    ((= m-bits (1+ sb!vm:n-word-bits))
+                     (setq shift (- shift sb!vm:n-word-bits))
+                     (flet ((word (x)
+                              `(truly-the word ,x)))
+                       `(let* ((num x)
+                               (t1 (%multiply-high num ,(- m n))))
+                          (ash ,(word `(+ t1 (ash ,(word `(- num t1))
+                                                  -1)))
+                               ,(- 1 shift)))))
+                    ((< (* max-x m) n)
+                     `(ash (* x ,m) ,(- shift)))
+                    (t
+                     (multiple-value-setq (m shift)
+                       (get-scaled-multiplier m shift))
+                     `(%multiply-high-and-shift x ,m ,shift)))))
+        `(values (truncate (truly-the (integer 0 ,(truncate (* max-x a) y))
+                              ,expr)
+                   ,divisor))))))
+
 ;;; Return an expression for calculating the quotient like in the previous
 ;;; function, but the arguments have to fit in signed words.
 ;;; The algorithm is taken from the same paper, Figure 5.2
@@ -322,7 +360,7 @@
   (let* ((n (expt 2 (1- sb!vm:n-word-bits)))
          (expr
           (multiple-value-bind (m shift)
-              (choose-multiplier (abs y) (max (abs max-x) (abs min-x)))
+              (choose-multiplier 1 (abs y) (max (abs max-x) (abs min-x)))
             (cond
               ((and (< (* max-x m) n) (>= (* min-x m) (- n)))
                `(ash (* num ,m) ,(- shift)))
