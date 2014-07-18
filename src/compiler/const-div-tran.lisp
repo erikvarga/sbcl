@@ -311,6 +311,10 @@
                      (+ t1 (ash (truly-the word (- num t1)) -1)))
                     -2)))))
 
+;;; Return an expression to calculate truncated multiplication of an
+;;; integer by constant rational A/Y, using multiplication, shift and
+;;; add/sub instead of division. The integer and the numerator/denominator
+;;; of the rational arg must be positive and fit in a machine word.
 (defun gen-unsigned-mul-by-frac-expr (a y max-x)
   (declare (type word a y max-x))
   (multiple-value-bind (m shift)
@@ -356,6 +360,36 @@
         `(values (truncate (truly-the (integer 0 ,(truncate (* max-x a) y))
                                       ,expr)
                            ,divisor))))))
+
+;;; The following two asserts show some of the average cases and the worst case
+;;; with respect to the complexity of the generated expression of the previous,
+;;; function, under a word size of 32 bits. The TRUNCATE is further optimized
+;;; during compilation (transformed into multiply-shift or, in case of
+;;; (TRUNCATE ... 1), removed altogether).
+#+sb-xc-host
+(when (= sb!vm:n-word-bits 32)
+  (assert (equal (gen-unsigned-mul-by-frac-expr 3 7 most-positive-word)
+                  '(values
+                    (truncate
+                     (truly-the (integer 0 1840700269)
+                      (let* ((num x) (t1 (%multiply-high num 3067833783)))
+                        (ash
+                         (truly-the word (+ t1 (ash
+                                                (truly-the word (- num t1)) -1)))
+                         -1)))
+                     1))))
+  (assert (equal (gen-unsigned-mul-by-frac-expr 7 24 most-positive-word)
+                 '(values
+                   (truncate
+                    (truly-the (integer 0 3758096383)
+                     (%multiply-high-and-shift x 3758096384 0))
+                    3))))
+  (assert (equal (gen-unsigned-mul-by-frac-expr 4 3 most-positive-word)
+                 '(values
+                   (truncate
+                    (truly-the (integer 0 5726623060)
+                     (ash (* x 11453246123) -33))
+                    1)))))
 
 ;;; Return an expression for calculating the quotient like in the previous
 ;;; function, but the arguments have to fit in signed words.
