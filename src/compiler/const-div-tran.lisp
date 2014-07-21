@@ -331,13 +331,7 @@
                   y scale))))
       (let* ((n (expt 2 sb!vm:n-word-bits))
              (expr
-              (cond ((> m-bits (* 2 sb!vm:n-word-bits))
-                     (let ((q (truncate a y)))
-                       `(+ (* x ,q)
-                           ,(gen-unsigned-mul-by-frac-expr
-                             (- a (* y q))
-                             y max-x))))
-                    ((and (= m-bits (1+ sb!vm:n-word-bits))
+              (cond ((and (= m-bits (1+ sb!vm:n-word-bits))
                           (> shift sb!vm:n-word-bits))
                      (setq shift (- shift sb!vm:n-word-bits))
                      (flet ((word (x)
@@ -350,7 +344,22 @@
                     ((> (+ m-bits
                            (max 0 (- sb!vm:n-word-bits shift)))
                         sb!vm:n-word-bits)
-                     `(ash (* x ,m) ,(- shift)))
+                     (let ((shift-rem (- (* 2 sb!vm:n-word-bits) shift)))
+                       (cond ((<= (+ shift-rem (integer-length max-x))
+                                  sb!vm:n-word-bits)
+                              (let ((m-high (ash m (- sb!vm:n-word-bits)))
+                                    (m-low (ldb (byte sb!vm:n-word-bits 0) m)))
+                                `(let ((x (ash x ,shift-rem)))
+                                   (values (%multiply-and-add
+                                            x ,m-high
+                                            (%multiply-high x ,m-low))))))
+                             ((> a y)
+                              (let ((q (truncate a y)))
+                                `(+ (* x ,q)
+                                    ,(gen-unsigned-mul-by-frac-expr
+                                      (- a (* y q))
+                                      y max-x))))
+                             (t `(ash (* x ,m) ,(- shift))))))
                     ((< (* max-x m) n)
                      `(ash (* x ,m) ,(- shift)))
                     (t
