@@ -420,9 +420,7 @@
                    ;; the negation and subtraction is applied to it
                    (let ((max (truncate max-x (abs y)))
                          (min (truncate min-x (abs y))))
-                     (if (minusp y)
-                         (setq max (1+ max))
-                         (setq min (1- min)))
+                         (setq min (1- min))
                      ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
                      ;; VOP.
                      `(truly-the (integer ,min ,max)
