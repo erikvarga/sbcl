@@ -324,6 +324,10 @@
       (when (and (> (integer-length m) (1+ sb!vm:n-word-bits)) (evenp y))
         (let ((scale (logand y (- y))))
           (when (< a scale)
+            ;; When the Y is a multiple of 2^P, generate
+            ;; a multiplication by A/2^P and a truncated
+            ;; division by Y/2^P (The truncate is added
+            ;; at the end).
             (setq divisor (/ y scale)
                   m a
                   m-bits (integer-length m)
@@ -333,6 +337,9 @@
              (expr
               (cond ((and (= m-bits (1+ sb!vm:n-word-bits))
                           (> shift sb!vm:n-word-bits))
+                     ;; Perform N+1-bit multiply-shift when
+                     ;; the multiplier and shift value is
+                     ;; large enough.
                      (setq shift (- shift sb!vm:n-word-bits))
                      (flet ((word (x)
                               `(truly-the word ,x)))
@@ -341,9 +348,15 @@
                           (ash ,(word `(+ t1 (ash ,(word `(- num t1))
                                                   -1)))
                                ,(- 1 shift)))))
+                    ;; If everything fits in a word, we can
+                    ;; do the multiplication and shift directly.
+                    ((and (<= m-bits sb!vm:n-word-bits) (< (* max-x m) n))
+                     `(ash (* x ,m) ,(- shift)))
                     ((> (+ m-bits
                            (max 0 (- sb!vm:n-word-bits shift)))
                         sb!vm:n-word-bits)
+                     ;; If the multiplier used for multiply-high is too
+                     ;; large, try to generate a 2N-bit multiply-shift.
                      (let ((shift-rem (- (* 2 sb!vm:n-word-bits) shift)))
                        (cond ((<= (+ shift-rem (integer-length max-x))
                                   sb!vm:n-word-bits)
@@ -354,15 +367,21 @@
                                             x ,m-high
                                             (%multiply-high x ,m-low))))))
                              ((> a y)
+                              ;; If that's not possible, and A/Y > 1,
+                              ;; multiply with its integer part and
+                              ;; the remainder separately.
                               (let ((q (truncate a y)))
                                 `(+ (* x ,q)
                                     ,(gen-unsigned-mul-by-frac-expr
                                       (- a (* y q))
                                       y max-x))))
-                             (t `(ash (* x ,m) ,(- shift))))))
-                    ((< (* max-x m) n)
-                     `(ash (* x ,m) ,(- shift)))
+                             ;; Otherwise, perform generic
+                             ;; multiplication and shift.
+                             (t
+                              `(ash (* x ,m) ,(- shift))))))
                     (t
+                     ;; Since the scaled multiplier fits into
+                     ;; a word, we can use multiply-high.
                      (multiple-value-setq (m shift)
                        (get-scaled-multiplier m shift))
                      `(%multiply-high-and-shift x ,m ,shift)))))
@@ -393,11 +412,11 @@
                     (truly-the (integer 0 3758096383)
                      (%multiply-high-and-shift x 3758096384 0))
                     3))))
-  (assert (equal (gen-unsigned-mul-by-frac-expr 4 3 most-positive-word)
+  (assert (equal (gen-unsigned-mul-by-frac-expr 8 9 most-positive-word)
                  '(values
                    (truncate
-                    (truly-the (integer 0 5726623060)
-                     (ash (* x 11453246123) -33))
+                    (truly-the (integer 0 3817748706)
+                     (ash (* x 30541989661) -35))
                     1)))))
 
 ;;; Return an expression for calculating the quotient like in the previous
