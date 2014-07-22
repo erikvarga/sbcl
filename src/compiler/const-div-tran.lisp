@@ -257,6 +257,12 @@
       (multiple-value-bind (m shift2)
           (choose-multiplier 1 y max-x)
         (cond
+          ((> y (truncate max-x 3))
+           ;; When Y is large enough, it's faster to
+           ;; determine the quotient with comparisons.
+            `(cond ((< x ,y) 0)
+                   ((< x ,(* y 2)) 1)
+                   (t 2)))
           ((< (* max-x m) n)
            `(ash (* x ,m) ,(- shift2)))
           (t
@@ -319,6 +325,14 @@
   (declare (type word a y max-x))
   (multiple-value-bind (m shift)
       (choose-multiplier a y max-x)
+    (let ((s (expt 2 shift)))
+      (when (> s (truncate (* m max-x) 3))
+     ;; When the shift value is large enough, it's faster
+     ;; to determine the quotient with comparisons.
+     (return-from gen-unsigned-mul-by-frac-expr
+         `(cond ((< x ,(ceiling s m)) 0)
+                ((< x ,(ceiling (* s 2) m)) 1)
+                (t 2)))))
     (let ((divisor 1)
           (m-bits (integer-length m)))
       (when (and (> (integer-length m) (1+ sb!vm:n-word-bits)) (evenp y))
@@ -428,6 +442,17 @@
            (type sb!vm:signed-word min-x max-x))
   (aver (not (zerop (logand (abs y) (1- (abs y))))))
   (aver (<= min-x max-x))
+  (when (> (abs y) (ash (max (abs max-x) (abs min-x)) -1))
+    ;; When Y is large enough, it's faster to
+    ;; determine the quotient with comparisons.
+    (return-from gen-signed-div-by-constant-expr
+      (if (plusp y)
+          `(cond ((<= x ,(- y)) -1)
+                 ((< x ,y) 0)
+                 (t 1))
+          `(cond ((<= x ,y) 1)
+                 ((< x ,(- y)) 0)
+                 (t -1)))))
   (let* ((n (expt 2 (1- sb!vm:n-word-bits)))
          (expr
           (multiple-value-bind (m shift)
