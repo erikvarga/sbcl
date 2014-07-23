@@ -317,6 +317,91 @@
                      (+ t1 (ash (truly-the word (- num t1)) -1)))
                     -2)))))
 
+;;; Return an expression for calculating the quotient like in the previous
+;;; function, but the arguments have to fit in signed words.
+;;; The algorithm is taken from the same paper, Figure 5.2
+(defun gen-signed-div-by-constant-expr (y min-x max-x)
+  (declare (type (or (integer #.(- (expt 2 (1- sb!vm:n-word-bits))) -3)
+                     (integer 3 #.(expt 2 (1- sb!vm:n-word-bits)))) y)
+           (type sb!vm:signed-word min-x max-x))
+  (aver (not (zerop (logand (abs y) (1- (abs y))))))
+  (aver (<= min-x max-x))
+  (when (> (abs y) (ash (max (abs max-x) (abs min-x)) -1))
+    ;; When Y is large enough, it's faster to
+    ;; determine the quotient with comparisons.
+    (return-from gen-signed-div-by-constant-expr
+      (if (plusp y)
+          `(cond ((<= x ,(- y)) -1)
+                 ((< x ,y) 0)
+                 (t 1))
+          `(cond ((<= x ,y) 1)
+                 ((< x ,(- y)) 0)
+                 (t -1)))))
+  (let* ((n (expt 2 (1- sb!vm:n-word-bits)))
+         (expr
+          (multiple-value-bind (m shift)
+              (choose-multiplier 1 (abs y) (max (abs max-x) (abs min-x)))
+            (cond
+              ((and (< (* max-x m) n) (>= (* min-x m) (- n)))
+               `(ash (* num ,m) ,(- shift)))
+              (t
+               (multiple-value-setq (m shift)
+                 (get-scaled-multiplier m shift))
+               (if (>= m n)
+                   `(ash (truly-the
+                          sb!vm:signed-word
+                          (+ num
+                             (%signed-multiply-high num ,(- m (* 2 n)))))
+                         ,(- shift))
+                   ;; Determine the range of the quotient before
+                   ;; the negation and subtraction is applied to it
+                   (let ((max (truncate max-x (abs y)))
+                         (min (truncate min-x (abs y))))
+                         (setq min (1- min))
+                     ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
+                     ;; VOP.
+                     `(truly-the (integer ,min ,max)
+                                 (%signed-multiply-high-and-shift
+                                  num ,m ,shift)))))))))
+    (setq expr
+          `(- ,expr (ash num ,(- sb!vm:n-word-bits))))
+    (when (minusp y)
+      (setq expr `(- ,expr)))
+    (let ((max (truncate max-x y))
+          (min (truncate min-x y)))
+      (when (minusp y) (rotatef min max))
+      `(let ((num x))
+         (truly-the (integer ,min ,max)
+                    ,expr)))))
+
+;;; The following two asserts show the expected average case and worst case
+;;; with respect to the complexity of the generated expression of the previous,
+;;; function, under a word size of 32 bits:
+#+sb-xc-host
+(when (= sb!vm:n-word-bits 32)
+  (assert (equal
+           (gen-signed-div-by-constant-expr 11
+                                            (- (expt 2 (1- sb!vm:n-word-bits)))
+                                            (1- (expt 2 (1- sb!vm:n-word-bits))))
+           '(let ((num x))
+             (truly-the (integer -195225786 195225786)
+              (-
+               (truly-the (integer -195225787 195225786)
+                          (%signed-multiply-high-and-shift num 780903145 1))
+               (ash num -32))))))
+  (assert (equal
+           (gen-signed-div-by-constant-expr 7
+                                            (- (expt 2 (1- sb!vm:n-word-bits)))
+                                            (1- (expt 2 (1- sb!vm:n-word-bits))))
+           '(let ((num x))
+             (truly-the (integer -306783378 306783378)
+              (-
+               (ash
+                (truly-the sb!vm:signed-word
+                           (+ num (%signed-multiply-high num -1840700269)))
+                -2)
+               (ash num -32)))))))
+
 ;;; Return an expression to calculate truncated multiplication of an
 ;;; integer by constant rational A/Y, using multiplication, shift and
 ;;; add/sub instead of division. The integer and the numerator/denominator
@@ -432,91 +517,6 @@
                     (truly-the (integer 0 3817748706)
                      (ash (* x 30541989661) -35))
                     1)))))
-
-;;; Return an expression for calculating the quotient like in the previous
-;;; function, but the arguments have to fit in signed words.
-;;; The algorithm is taken from the same paper, Figure 5.2
-(defun gen-signed-div-by-constant-expr (y min-x max-x)
-  (declare (type (or (integer #.(- (expt 2 (1- sb!vm:n-word-bits))) -3)
-                     (integer 3 #.(expt 2 (1- sb!vm:n-word-bits)))) y)
-           (type sb!vm:signed-word min-x max-x))
-  (aver (not (zerop (logand (abs y) (1- (abs y))))))
-  (aver (<= min-x max-x))
-  (when (> (abs y) (ash (max (abs max-x) (abs min-x)) -1))
-    ;; When Y is large enough, it's faster to
-    ;; determine the quotient with comparisons.
-    (return-from gen-signed-div-by-constant-expr
-      (if (plusp y)
-          `(cond ((<= x ,(- y)) -1)
-                 ((< x ,y) 0)
-                 (t 1))
-          `(cond ((<= x ,y) 1)
-                 ((< x ,(- y)) 0)
-                 (t -1)))))
-  (let* ((n (expt 2 (1- sb!vm:n-word-bits)))
-         (expr
-          (multiple-value-bind (m shift)
-              (choose-multiplier 1 (abs y) (max (abs max-x) (abs min-x)))
-            (cond
-              ((and (< (* max-x m) n) (>= (* min-x m) (- n)))
-               `(ash (* num ,m) ,(- shift)))
-              (t
-               (multiple-value-setq (m shift)
-                 (get-scaled-multiplier m shift))
-               (if (>= m n)
-                   `(ash (truly-the
-                          sb!vm:signed-word
-                          (+ num
-                             (%signed-multiply-high num ,(- m (* 2 n)))))
-                         ,(- shift))
-                   ;; Determine the range of the quotient before
-                   ;; the negation and subtraction is applied to it
-                   (let ((max (truncate max-x (abs y)))
-                         (min (truncate min-x (abs y))))
-                         (setq min (1- min))
-                     ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
-                     ;; VOP.
-                     `(truly-the (integer ,min ,max)
-                                 (%signed-multiply-high-and-shift
-                                  num ,m ,shift)))))))))
-    (setq expr
-          `(- ,expr (ash num ,(- sb!vm:n-word-bits))))
-    (when (minusp y)
-      (setq expr `(- ,expr)))
-    (let ((max (truncate max-x y))
-          (min (truncate min-x y)))
-      (when (minusp y) (rotatef min max))
-      `(let ((num x))
-         (truly-the (integer ,min ,max)
-                    ,expr)))))
-
-;;; The following two asserts show the expected average case and worst case
-;;; with respect to the complexity of the generated expression of the previous,
-;;; function, under a word size of 32 bits:
-#+sb-xc-host
-(when (= sb!vm:n-word-bits 32)
-  (assert (equal
-           (gen-signed-div-by-constant-expr 11
-                                            (- (expt 2 (1- sb!vm:n-word-bits)))
-                                            (1- (expt 2 (1- sb!vm:n-word-bits))))
-           '(let ((num x))
-             (truly-the (integer -195225786 195225786)
-              (-
-               (truly-the (integer -195225787 195225786)
-                          (%signed-multiply-high-and-shift num 780903145 1))
-               (ash num -32))))))
-  (assert (equal
-           (gen-signed-div-by-constant-expr 7
-                                            (- (expt 2 (1- sb!vm:n-word-bits)))
-                                            (1- (expt 2 (1- sb!vm:n-word-bits))))
-           '(let ((num x))
-             (truly-the (integer -306783378 306783378)
-              (-
-               (ash
-                (truly-the sb!vm:signed-word
-                           (+ num (%signed-multiply-high num -1840700269)))
-                -2)
-               (ash num -32)))))))
 
 ;;; Return an expression for calculating the quotient like in the previous
 ;;; function, but the quotient is rounded towards positive or negative infinity.
