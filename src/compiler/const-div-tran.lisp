@@ -158,7 +158,7 @@
 
 ;;; Get the multipy and shift value that can be used instead of
 ;;; multiplying by a/y. Used in gen-(un)signed-div-by-constant-expr
-;;; and gen-unsigned-mul-by-frac-expr.
+;;; and gen-(un)signed-mul-by-frac-expr.
 (defun choose-multiplier (a y max-x)
   (let* ((max-shift (+ (integer-length max-x) (integer-length y)))
          (scale (ash a max-shift))
@@ -215,7 +215,7 @@
                                    (* y-abs (expt 2 precision)))))))))))
 
 ;;; Get the scaled multiply and shift value that can be used with
-;;; multiply-high. Used in gen-(un)signed-div-by-constant-expr.
+;;; multiply-high. Used in all the div-by-mul code generators.
 (defun get-scaled-multiplier (m shift)
   (let ((scale (max 0 (- sb!vm:n-word-bits shift))))
     (values (* m (ash 1 scale))
@@ -517,6 +517,82 @@
                     (truly-the (integer 0 3817748706)
                      (ash (* x 30541989661) -35))
                     1)))))
+
+;;; Return an expression for truncated mul-by-frac like in the previous
+;;; function, but the arguments have to fit in signed words.
+(defun gen-signed-mul-by-frac-expr (a y min-x max-x)
+  (declare (type sb!vm:signed-word a min-x max-x)
+           (type (integer 1 #.(1- (expt 2 (1- sb!vm:n-word-bits)))) y))
+  (aver (<= min-x max-x))
+  (multiple-value-bind (m shift)
+      (choose-multiplier (abs a) y (max (abs max-x) (abs min-x)))
+    (let ((max-product (truncate (* max-x a) y))
+          (min-product (truncate (* min-x a) y)))
+      (when (minusp a) (rotatef min-product max-product))
+      (let* ((m-bits (integer-length m))
+             (n (expt 2 (1- sb!vm:n-word-bits)))
+             (expr
+              (cond ((and (= m-bits sb!vm:n-word-bits)
+                          (> shift sb!vm:n-word-bits))
+                     ;; Perform N+1-bit multiply-shift when
+                     ;; the multiplier and shift value is
+                     ;; large enough.
+                     (setq shift (- shift sb!vm:n-word-bits))
+                     `(ash (truly-the
+                            sb!vm:signed-word
+                            (+ num
+                               (%signed-multiply-high num ,(- m (* 2 n)))))
+                           ,(- shift)))
+                    ;; If everything fits in a word, we can
+                    ;; do the multiplication and shift directly.
+                    ((and (<= m-bits (1- sb!vm:n-word-bits))
+                          (< (* max-x m) n)
+                          (>= (* min-x m) (- n)))
+                     `(ash (* num ,m) ,(- shift)))
+                    ((> (+ m-bits
+                           (max 0 (- sb!vm:n-word-bits shift)))
+                        (1- sb!vm:n-word-bits))
+                     ;; If the multiplier used for multiply-high is too
+                     ;; large, try to generate a 2N-bit multiply-shift.
+                     (let ((shift-rem (- (* 2 sb!vm:n-word-bits) shift)))
+                       (cond ((and (< (ash max-x shift-rem) n)
+                                   (>= (ash min-x shift-rem) (- n)))
+                              `(ash (* num ,m) ,(- shift))
+                              #+null ;; TODO: implement %signed-multiply-and-add
+                              (let ((m-high (ash m (- sb!vm:n-word-bits)))
+                                    (m-low (ldb (byte sb!vm:n-word-bits 0) m)))
+                                (let ((x (ash x ,shift-rem)))
+                                  (values (%values (%signed-multiply-and-add
+                                            x ,m-high
+                                            (%signed-multiply-high x ,m-low)))))))
+                             ((> a y)
+                              ;; If that's not possible, and A/Y > 1,
+                              ;; multiply with its integer part and
+                              ;; the remainder separately.
+                              (let ((q (truncate a y)))
+                                (return-from gen-signed-mul-by-frac-expr
+                                  `(truly-the (integer ,min-product ,max-product)
+                                    (+ (* x ,q)
+                                       ,(gen-signed-mul-by-frac-expr
+                                         (- a (* y q))
+                                         y min-x max-x))))))
+                             ;; Otherwise, perform generic
+                             ;; multiplication and shift.
+                             (t
+                              `(ash (* num ,m) ,(- shift))))))
+                    (t
+                     ;; Since the scaled multiplier fits into
+                     ;; a word, we can use multiply-high.
+                     (multiple-value-setq (m shift)
+                       (get-scaled-multiplier m shift))
+                     `(%signed-multiply-high-and-shift num ,m ,shift)))))
+        (setq expr
+              `(- ,expr (ash num ,(- sb!vm:n-word-bits))))
+        (when (minusp a)
+          (setq expr `(- ,expr)))
+        `(let ((num x))
+           (truly-the (integer ,min-product ,max-product)
+                      ,expr))))))
 
 ;;; Return an expression for calculating the quotient like in the previous
 ;;; function, but the quotient is rounded towards positive or negative infinity.
@@ -955,8 +1031,32 @@
                      most-positive-word)))
     (unless (and (typep num 'word) (typep denom 'word)
                  ;; Integer division is handled elsewhere.
-                 (/= 1 (denominator y)))
+                 (/= 1 denom))
       (give-up-ir1-transform))
     `(let* ((quot ,(gen-unsigned-mul-by-frac-expr denom num max-x))
+            (rem (- x (* quot ,y))))
+       (values quot rem))))
+;;; Similar to previous truncate transform, but with signed args.
+(deftransform truncate ((x y) (sb!vm:signed-word (constant-arg ratio))
+                        *
+                        :policy (and (> speed compilation-speed)
+                                     (> speed space)))
+  "convert signed integer - rational division to multiplication"
+  (let* ((y      (lvar-value y))
+         (num (abs (numerator y)))
+         (denom (* (signum y) (abs (denominator y))))
+         (x-type (lvar-type x))
+         (max-x  (or (and (numeric-type-p x-type)
+                          (numeric-type-high x-type))
+                     (- (expt 2 (1- sb!vm:n-word-bits)) 1)))
+         (min-x  (or (and (numeric-type-p x-type)
+                          (numeric-type-low x-type))
+                     (- (expt 2 (1- sb!vm:n-word-bits))))))
+    (unless (and (typep num 'sb!vm:signed-word)
+                 (typep denom 'sb!vm:signed-word)
+                 ;; Integer division is handled elsewhere.
+                 (/= 1 (abs denom)))
+      (give-up-ir1-transform))
+    `(let* ((quot ,(gen-signed-mul-by-frac-expr denom num min-x max-x))
             (rem (- x (* quot ,y))))
        (values quot rem))))
