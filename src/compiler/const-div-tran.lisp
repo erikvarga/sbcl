@@ -379,28 +379,29 @@
 ;;; function, under a word size of 32 bits:
 #+sb-xc-host
 (when (= sb!vm:n-word-bits 32)
-  (assert (equal
-           (gen-signed-div-by-constant-expr 11
-                                            (- (expt 2 (1- sb!vm:n-word-bits)))
-                                            (1- (expt 2 (1- sb!vm:n-word-bits))))
-           '(let ((num x))
-             (truly-the (integer -195225786 195225786)
-              (-
-               (truly-the (integer -195225787 195225786)
-                          (%signed-multiply-high-and-shift num 780903145 1))
-               (ash num -32))))))
-  (assert (equal
-           (gen-signed-div-by-constant-expr 7
-                                            (- (expt 2 (1- sb!vm:n-word-bits)))
-                                            (1- (expt 2 (1- sb!vm:n-word-bits))))
-           '(let ((num x))
-             (truly-the (integer -306783378 306783378)
-              (-
-               (ash
-                (truly-the sb!vm:signed-word
-                           (+ num (%signed-multiply-high num -1840700269)))
-                -2)
-               (ash num -32)))))))
+  (macrolet ((gen (y)
+               `(gen-signed-div-by-constant-expr
+                 ,y
+                 (- (expt 2 (1- sb!vm:n-word-bits)))
+                 (1- (expt 2 (1- sb!vm:n-word-bits))))))
+    (assert (equal
+             (gen 11)
+             '(let ((num x))
+               (truly-the (integer -195225786 195225786)
+                (-
+                 (truly-the (integer -195225787 195225786)
+                            (%signed-multiply-high-and-shift num 780903145 1))
+                 (ash num -32))))))
+    (assert (equal
+             (gen 7)
+             '(let ((num x))
+               (truly-the (integer -306783378 306783378)
+                (-
+                 (ash
+                  (truly-the sb!vm:signed-word
+                             (+ num (%signed-multiply-high num -1840700269)))
+                  -2)
+                 (ash num -32))))))))
 
 ;;; Return an expression to calculate truncated multiplication of an
 ;;; integer by constant rational A/Y, using multiplication, shift and
@@ -488,7 +489,7 @@
                                       ,expr)
                            ,divisor))))))
 
-;;; The following two asserts show some of the average cases and the worst case
+;;; The following asserts show some of the average cases and the worst case
 ;;; with respect to the complexity of the generated expression of the previous,
 ;;; function, under a word size of 32 bits. The TRUNCATE is further optimized
 ;;; during compilation (transformed into multiply-shift or, in case of
@@ -533,7 +534,7 @@
              (n (expt 2 (1- sb!vm:n-word-bits)))
              (expr
               (cond ((and (= m-bits sb!vm:n-word-bits)
-                          (> shift sb!vm:n-word-bits))
+                          (>= shift sb!vm:n-word-bits))
                      ;; Perform N+1-bit multiply-shift when
                      ;; the multiplier and shift value is
                      ;; large enough.
@@ -563,8 +564,8 @@
                                    (%signed-multiply-and-add-high
                                     x ,m-high
                                     (%signed-multiply-high x ,m-low)))))
-                             ((> a y)
-                              ;; If that's not possible, and A/Y > 1,
+                             ((> (abs a) y)
+                              ;; If that's not possible, and ABS(A/Y) > 1,
                               ;; multiply with its integer part and
                               ;; the remainder separately.
                               (let ((q (truncate a y)))
@@ -591,6 +592,44 @@
         `(let ((num x))
            (truly-the (integer ,min-product ,max-product)
                       ,expr))))))
+
+;;; The following asserts show some of the average cases and the worst case
+;;; with respect to the complexity of the generated expression of the previous,
+;;; function, under a word size of 32 bits.
+#+sb-xc-host
+(when (= sb!vm:n-word-bits 32)
+  (macrolet ((gen (a y)
+               `(gen-signed-mul-by-frac-expr
+                 ,a ,y
+                 (- (expt 2 (1- sb!vm:n-word-bits)))
+                 (1- (expt 2 (1- sb!vm:n-word-bits))))))
+    (assert (equal (gen -2 3)
+                   '(let ((num x))
+                     (truly-the (integer -1431655764 1431655765)
+                      (-
+                       (-
+                        (ash
+                         (truly-the sb!vm:signed-word
+                                    (+ num
+                                       (%signed-multiply-high num -1431655765)))
+                         0)
+                        (ash num -32)))))))
+    (assert (equal (gen 346 69)
+                   '(truly-the (integer -10768541191 10768541186)
+                     (+ (* x 5)
+                      (let ((num x))
+                        (truly-the (integer -31122951 31122951)
+                                   (-
+                                    (%signed-multiply-high-and-shift num
+                                                                     1991868891
+                                                                     5)
+                                    (ash num -32))))))))
+    (assert (equal (gen 8 9)
+                   '(let ((num x))
+                     (truly-the (integer -1908874353 1908874352)
+                      (-
+                       (ash (* num 15270994831) -34)
+                       (ash num -32))))))))
 
 ;;; Return an expression for calculating the quotient like in the previous
 ;;; function, but the quotient is rounded towards positive or negative infinity.
@@ -739,92 +778,89 @@
 ;;; function for both signed and unsigned words, under a word size of 32 bits:
 #+sb-xc-host
 (when (= sb!vm:n-word-bits 32)
-  ;; unsigned ceiling:
-  (assert (equal
-           (gen-ceilinged-div-by-constant-expr 7 0
-                                               (1- (expt 2 sb!vm:n-word-bits)))
-           '(truly-the (integer 0 613566756)
-           (if t
-               ;; The unnecessary condition checking is
-               ;; removed at compile-time
-               (%multiply-high-and-shift x 1227133513 1)
-               (%multiply-high-and-shift x 1227133513 1)))))
-  (assert (equal
-           (gen-ceilinged-div-by-constant-expr 11 0
-                                               (1- (expt 2 sb!vm:n-word-bits)))
-           '(truly-the (integer 0 390451572)
-             (if t
-                 (let* ((num x) (t1 (%multiply-high num 1952257861)))
-                   (ash
-                    (truly-the word (+ t1 (ash (truly-the word (- num t1)) -1)))
-                    -3))
-                 (let* ((num x) (t1 (%multiply-high num 1952257861)))
-                   (ash
-                    (truly-the word (+ t1 (ash (truly-the word (- num t1)) -1)))
-                    -3))))))
-  ;; signed ceiling:
-  (assert (equal
-           (gen-ceilinged-div-by-constant-expr 5
-                                     (- (expt 2 (1- sb!vm:n-word-bits)))
-                                     (1- (expt 2 (1- sb!vm:n-word-bits))))
-           '(truly-the (integer -429496730 429496729)
-             (if (plusp x)
-                 (%signed-multiply-high-and-shift x 858993459 0)
-                 (%signed-multiply-high-and-shift x 1717986919 1)))))
-  (assert (equal
-           (gen-ceilinged-div-by-constant-expr 7
-                                     (- (expt 2 (1- sb!vm:n-word-bits)))
-                                     (1- (expt 2 (1- sb!vm:n-word-bits))))
-           '(truly-the (integer -306783379 306783378)
-             (if (plusp x)
-                 (%signed-multiply-high-and-shift x 1227133513 1)
-                 (let ((num x))
-                   (ash (+ (%signed-multiply-high num -1840700269) num) -2))))))
-  ;; unsigned floor:
-  (assert (equal
-           (gen-floored-div-by-constant-expr 11 0
-                                               (1- (expt 2 sb!vm:n-word-bits)))
-           '(truly-the (integer 0 390451572)
-             (if t
-                 (%multiply-high-and-shift x 3123612579 3)
-                 (%multiply-high-and-shift x 3123612579 3)))))
-  (assert (equal
-           (gen-floored-div-by-constant-expr 7 0
-                                               (1- (expt 2 sb!vm:n-word-bits)))
-           '(truly-the (integer 0 613566756)
-             (if t
-                 (let* ((num x)
-                        (t1 (%multiply-high num 613566757)))
-                   (ash
-                    (truly-the word (+ t1
-                                       (ash (truly-the word (- num t1))
-                                            -1)))
-                    -2))
-                 (let* ((num x)
-                        (t1 (%multiply-high num 613566757)))
-                   (ash
-                    (truly-the word (+ t1
-                                       (ash (truly-the word (- num t1))
-                                            -1)))
-                    -2))))))
-  ;; signed floor:
-  (assert (equal
-           (gen-floored-div-by-constant-expr 5
-                                     (- (expt 2 (1- sb!vm:n-word-bits)))
-                                     (1- (expt 2 (1- sb!vm:n-word-bits))))
-           '(truly-the (integer -429496730 429496729)
-             (if (plusp x)
-                 (%signed-multiply-high-and-shift x 1717986919 1)
-                 (%signed-multiply-high-and-shift x 858993459 0)))))
-  (assert (equal
-           (gen-floored-div-by-constant-expr 7
-                                     (- (expt 2 (1- sb!vm:n-word-bits)))
-                                     (1- (expt 2 (1- sb!vm:n-word-bits))))
-           '(truly-the (integer -306783379 306783378)
-             (if (plusp x)
-                 (let ((num x))
-                   (ash (+ (%signed-multiply-high num -1840700269) num) -2))
-                 (%signed-multiply-high-and-shift x 1227133513 1))))))
+  (macrolet ((gen (y div-type sign-type)
+               `(,(if (eq div-type 'ceiling)
+                      'gen-ceilinged-div-by-constant-expr
+                      'gen-floored-div-by-constant-expr)
+                  ,y
+                  ,@(if (eq sign-type 'unsigned)
+                        `(0 ,(1- (expt 2 sb!vm:n-word-bits)))
+                        `(,(- (expt 2 (1- sb!vm:n-word-bits)))
+                           ,(1- (expt 2 (1- sb!vm:n-word-bits))))))))
+    ;; unsigned ceiling:
+    (assert (equal
+             (gen 7 ceiling unsigned)
+             '(truly-the (integer 0 613566756)
+               (if t
+                   ;; The unnecessary condition checking is
+                   ;; removed at compile-time
+                   (%multiply-high-and-shift x 1227133513 1)
+                   (%multiply-high-and-shift x 1227133513 1)))))
+    (assert (equal
+             (gen 11 ceiling unsigned)
+             '(truly-the (integer 0 390451572)
+               (if t
+                   (let* ((num x) (t1 (%multiply-high num 1952257861)))
+                     (ash
+                      (truly-the word (+ t1 (ash (truly-the word (- num t1)) -1)))
+                      -3))
+                   (let* ((num x) (t1 (%multiply-high num 1952257861)))
+                     (ash
+                      (truly-the word (+ t1 (ash (truly-the word (- num t1)) -1)))
+                      -3))))))
+    ;; signed ceiling:
+    (assert (equal
+             (gen 5 ceiling signed)
+             '(truly-the (integer -429496730 429496729)
+               (if (plusp x)
+                   (%signed-multiply-high-and-shift x 858993459 0)
+                   (%signed-multiply-high-and-shift x 1717986919 1)))))
+    (assert (equal
+             (gen 7 ceiling signed)
+             '(truly-the (integer -306783379 306783378)
+               (if (plusp x)
+                   (%signed-multiply-high-and-shift x 1227133513 1)
+                   (let ((num x))
+                     (ash (+ (%signed-multiply-high num -1840700269) num) -2))))))
+    ;; unsigned floor:
+    (assert (equal
+             (gen 11 floor unsigned)
+             '(truly-the (integer 0 390451572)
+               (if t
+                   (%multiply-high-and-shift x 3123612579 3)
+                   (%multiply-high-and-shift x 3123612579 3)))))
+    (assert (equal
+             (gen 7 floor unsigned)
+             '(truly-the (integer 0 613566756)
+               (if t
+                   (let* ((num x)
+                          (t1 (%multiply-high num 613566757)))
+                     (ash
+                      (truly-the word (+ t1
+                                         (ash (truly-the word (- num t1))
+                                              -1)))
+                      -2))
+                   (let* ((num x)
+                          (t1 (%multiply-high num 613566757)))
+                     (ash
+                      (truly-the word (+ t1
+                                         (ash (truly-the word (- num t1))
+                                              -1)))
+                      -2))))))
+    ;; signed floor:
+    (assert (equal
+             (gen 5 floor signed)
+             '(truly-the (integer -429496730 429496729)
+               (if (plusp x)
+                   (%signed-multiply-high-and-shift x 1717986919 1)
+                   (%signed-multiply-high-and-shift x 858993459 0)))))
+    (assert (equal
+             (gen 7 floor signed)
+             '(truly-the (integer -306783379 306783378)
+               (if (plusp x)
+                   (let ((num x))
+                     (ash (+ (%signed-multiply-high num -1840700269) num) -2))
+                   (%signed-multiply-high-and-shift x 1227133513 1)))))))
 
 ;;; If the divisor is constant and both args are positive and fit in a
 ;;; machine word, replace the division by a multiplication and possibly
