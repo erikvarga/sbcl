@@ -680,6 +680,13 @@
   #!+multiply-high-vops
   (%signed-multiply-high-and-shift x y shift))
 
+;; Multiply signed words x and y. Add b to the
+;; product, then return a signed word containing
+;; the high n bits of the sum.
+(defun %signed-multiply-and-add-high (x y b)
+  (declare (type sb!vm:signed-word x y b))
+  (%signed-multiply-and-add-high x y b))
+
 (defun floor (number &optional (divisor 1))
   #!+sb-doc
   "Return the greatest integer not greater than number, or number/divisor.

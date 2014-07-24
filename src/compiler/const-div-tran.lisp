@@ -557,14 +557,12 @@
                      (let ((shift-rem (- (* 2 sb!vm:n-word-bits) shift)))
                        (cond ((and (< (ash max-x shift-rem) n)
                                    (>= (ash min-x shift-rem) (- n)))
-                              `(ash (* num ,m) ,(- shift))
-                              #+null ;; TODO: implement %signed-multiply-and-add
                               (let ((m-high (ash m (- sb!vm:n-word-bits)))
                                     (m-low (ldb (byte sb!vm:n-word-bits 0) m)))
-                                (let ((x (ash x ,shift-rem)))
-                                  (values (%values (%signed-multiply-and-add
-                                            x ,m-high
-                                            (%signed-multiply-high x ,m-low)))))))
+                                `(let ((x (ash x ,shift-rem)))
+                                   (%signed-multiply-and-add-high
+                                    x ,m-high
+                                    (%signed-multiply-high x ,m-low)))))
                              ((> a y)
                               ;; If that's not possible, and A/Y > 1,
                               ;; multiply with its integer part and

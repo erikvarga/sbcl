@@ -1979,6 +1979,31 @@ constant shift greater than word length")))
     (unless (zerop shift) (inst sar result (min 63 shift)))
     (inst and result (lognot fixnum-tag-mask))))
 
+(define-vop (smul-add-hi)
+  (:translate %signed-multiply-and-add-high)
+  (:policy :fast-safe)
+  (:args (x :scs (signed-reg) :target eax)
+         (y :scs (signed-reg signed-stack))
+         (b :scs (signed-reg signed-stack)))
+  (:arg-types signed-num signed-num signed-num)
+  (:temporary (:sc signed-reg :offset eax-offset :from (:argument 0)) eax)
+  (:temporary (:sc signed-reg :offset edx-offset :from (:argument 1)
+                   :to (:result 0) :target hi) edx)
+  (:results (hi :scs (signed-reg)))
+  (:result-types signed-num)
+  (:generator 20
+    (move eax x)
+    (inst imul y)
+    (if (sc-is b signed-reg)
+        (inst test b b)  ; smaller instruction
+        (inst cmp b 0))
+    (inst jmp :ns positive)
+    (inst dec edx)
+    POSITIVE
+    (inst add eax b)
+    (inst adc edx 0)
+    (move hi edx)))
+
 (define-vop (bignum-lognot lognot-mod64/unsigned=>unsigned)
   (:translate sb!bignum:%lognot))
 
