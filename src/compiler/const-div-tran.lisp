@@ -556,29 +556,33 @@
                      ;; If the multiplier used for multiply-high is too
                      ;; large, try to generate a 2N-bit multiply-shift.
                      (let ((shift-rem (- (* 2 sb!vm:n-word-bits) shift)))
-                       (cond ((and (< (ash max-x shift-rem) n)
-                                   (>= (ash min-x shift-rem) (- n)))
-                              (let ((m-high (ash m (- sb!vm:n-word-bits)))
-                                    (m-low (ldb (byte sb!vm:n-word-bits 0) m)))
-                                `(let ((x (ash x ,shift-rem)))
-                                   (%signed-multiply-and-add-high
-                                    x ,m-high
-                                    (%signed-multiply-high x ,m-low)))))
-                             ((> (abs a) y)
-                              ;; If that's not possible, and ABS(A/Y) > 1,
-                              ;; multiply with its integer part and
-                              ;; the remainder separately.
-                              (let ((q (truncate a y)))
-                                (return-from gen-signed-mul-by-frac-expr
-                                  `(truly-the (integer ,min-product ,max-product)
-                                    (+ (* x ,q)
-                                       ,(gen-signed-mul-by-frac-expr
-                                         (- a (* y q))
-                                         y min-x max-x))))))
-                             ;; Otherwise, perform generic
-                             ;; multiplication and shift.
-                             (t
-                              `(ash (* num ,m) ,(- shift))))))
+                       (cond
+                         ;; Attempt only if %SIGNED-MULTIPLY-AND-ADD-HIGH
+                         ;; can be done efficiently.
+                         #!+multiply-high-vops
+                         ((and (< (ash max-x shift-rem) n)
+                               (>= (ash min-x shift-rem) (- n)))
+                          (let ((m-high (ash m (- sb!vm:n-word-bits)))
+                                (m-low (ldb (byte sb!vm:n-word-bits 0) m)))
+                            `(let ((x (ash x ,shift-rem)))
+                               (%signed-multiply-and-add-high
+                                x ,m-high
+                                (%signed-multiply-high x ,m-low)))))
+                         ((> (abs a) y)
+                          ;; If that's not possible, and ABS(A/Y) > 1,
+                          ;; multiply with its integer part and
+                          ;; the remainder separately.
+                          (let ((q (truncate a y)))
+                            (return-from gen-signed-mul-by-frac-expr
+                              `(truly-the (integer ,min-product ,max-product)
+                                          (+ (* x ,q)
+                                             ,(gen-signed-mul-by-frac-expr
+                                               (- a (* y q))
+                                               y min-x max-x))))))
+                         ;; Otherwise, perform generic
+                         ;; multiplication and shift.
+                         (t
+                          `(ash (* num ,m) ,(- shift))))))
                     (t
                      ;; Since the scaled multiplier fits into
                      ;; a word, we can use multiply-high.

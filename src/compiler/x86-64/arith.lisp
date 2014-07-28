@@ -1979,6 +1979,7 @@ constant shift greater than word length")))
     (unless (zerop shift) (inst sar result (min 63 shift)))
     (inst and result (lognot fixnum-tag-mask))))
 
+#!+multiply-high-vops
 (define-vop (smul-add-hi)
   (:translate %signed-multiply-and-add-high)
   (:policy :fast-safe)

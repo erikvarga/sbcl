@@ -683,8 +683,12 @@
 ;; Multiply signed words x and y. Add b to the
 ;; product, then return a signed word containing
 ;; the high n bits of the sum.
+#!-multiply-high-vops (declaim (inline %signed-multiply-and-add-high))
 (defun %signed-multiply-and-add-high (x y b)
   (declare (type sb!vm:signed-word x y b))
+  #!-multiply-high-vops
+  (ash (+ (* x y) b) (- sb!vm:n-word-bits))
+  #!+multiply-high-vops
   (%signed-multiply-and-add-high x y b))
 
 (defun floor (number &optional (divisor 1))
