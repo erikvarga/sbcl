@@ -657,9 +657,16 @@
 (defun %signed-multiply-high (x y)
   (declare (type sb!vm:signed-word x y))
   #!-multiply-high-vops
-  (logxor
-   (%multiply-high (abs x) (abs y))
-   (logxor (ash x -32) (ash y -32)))
+  (let ((prod-sign (logxor (ash x (- sb!vm:n-word-bits))
+                           (ash y (- sb!vm:n-word-bits)))))
+    (multiple-value-bind (hi lo)
+        (sb!bignum:%multiply (abs x) (abs y))
+      (setq hi (logxor hi prod-sign))
+      ;; Correct HI when the product is negative and
+      ;; a multiple of 2^W
+      (when (and (zerop lo) (= -1 prod-sign))
+        (incf hi))
+      hi))
   #!+multiply-high-vops
   (%signed-multiply-high x y))
 
