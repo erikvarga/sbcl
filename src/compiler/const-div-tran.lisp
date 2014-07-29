@@ -356,8 +356,7 @@
                    ;; Determine the range of the quotient before
                    ;; the negation and subtraction is applied to it
                    (let ((max (truncate max-x (abs y)))
-                         (min (truncate min-x (abs y))))
-                         (setq min (1- min))
+                         (min (1- (truncate min-x (abs y)))))
                      ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
                      ;; VOP.
                      `(truly-the (integer ,min ,max)
@@ -589,8 +588,11 @@
                      (multiple-value-setq (m shift)
                        (get-scaled-multiplier m shift))
                      `(%signed-multiply-high-and-shift num ,m ,shift)))))
-        (setq expr
-              `(- ,expr (ash num ,(- sb!vm:n-word-bits))))
+        (let ((max (truncate (* max-x (abs a)) y))
+              (min (1- (truncate (* min-x (abs a)) y))))
+          (setq expr
+                `(- (truly-the (integer ,min ,max) ,expr)
+                    (ash num ,(- sb!vm:n-word-bits)))))
         (when (minusp a)
           (setq expr `(- ,expr)))
         `(let ((num x))
@@ -612,27 +614,31 @@
                      (truly-the (integer -1431655764 1431655765)
                       (-
                        (-
-                        (ash
-                         (truly-the sb!vm:signed-word
-                                    (+ num
-                                       (%signed-multiply-high num -1431655765)))
-                         0)
+                        (truly-the (integer -1431655766 1431655764)
+                         (ash
+                          (truly-the sb!vm:signed-word
+                                     (+ num
+                                        (%signed-multiply-high num
+                                                               -1431655765)))
+                          0))
                         (ash num -32)))))))
     (assert (equal (gen 346 69)
                    '(truly-the (integer -10768541191 10768541186)
                      (+ (* x 5)
                       (let ((num x))
                         (truly-the (integer -31122951 31122951)
-                                   (-
-                                    (%signed-multiply-high-and-shift num
-                                                                     1991868891
-                                                                     5)
-                                    (ash num -32))))))))
+                         (-
+                          (truly-the (integer -31122952 31122951)
+                           (%signed-multiply-high-and-shift num
+                                                            1991868891
+                                                            5))
+                          (ash num -32))))))))
     (assert (equal (gen 8 9)
                    '(let ((num x))
                      (truly-the (integer -1908874353 1908874352)
                       (-
-                       (ash (* num 15270994831) -34)
+                       (truly-the (integer -1908874354 1908874352)
+                        (ash (* num 15270994831) -34))
                        (ash num -32))))))))
 
 ;;; Return an expression for calculating the quotient like in the previous
@@ -1067,9 +1073,7 @@
          (max-x  (or (and (numeric-type-p x-type)
                           (numeric-type-high x-type))
                      most-positive-word)))
-    (unless (and (typep num 'word) (typep denom 'word)
-                 ;; Integer division is handled elsewhere.
-                 (/= 1 denom))
+    (unless (and (typep num 'word) (typep denom 'word))
       (give-up-ir1-transform))
     `(let* ((quot ,(gen-unsigned-mul-by-frac-expr denom num max-x))
             (rem (- x (* quot ,y))))
@@ -1091,10 +1095,10 @@
                           (numeric-type-low x-type))
                      (- (expt 2 (1- sb!vm:n-word-bits))))))
     (unless (and (typep num 'sb!vm:signed-word)
-                 (typep denom 'sb!vm:signed-word)
-                 ;; Integer division is handled elsewhere.
-                 (/= 1 (abs denom)))
+                 (typep denom 'sb!vm:signed-word))
       (give-up-ir1-transform))
+    ;; Use the unsigned transform instead, if we can.
+    (unless (or (< y 0) (< min-x 0)) (give-up-ir1-transform))
     `(let* ((quot ,(gen-signed-mul-by-frac-expr denom num min-x max-x))
             (rem (- x (* quot ,y))))
        (values quot rem))))
