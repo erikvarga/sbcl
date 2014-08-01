@@ -1244,12 +1244,12 @@
          (y :scs (unsigned-reg)))
   (:arg-types unsigned-num unsigned-num (:constant word))
   (:info shift)
-  (:temporary (:sc non-descriptor-reg :from :eval :to :result) temp)
   (:results (result :scs (unsigned-reg)))
   (:result-types unsigned-num)
   (:generator 21
-    (inst mulhwu temp x y)
-    (inst srwi result temp (min 31 shift))))
+    (inst mulhwu result x y)
+    (unless (zerop shift)
+      (inst srwi result result (min 31 shift)))))
 
 #!+multiply-high-vops
 (define-vop (mulhi-shift/c/fx)
@@ -1265,7 +1265,8 @@
   (:result-types positive-fixnum)
   (:generator 16
     (inst mulhwu temp x y)
-    (inst srwi temp temp (min 31 shift))
+    (unless (zerop shift)
+      (inst srwi temp temp (min 31 shift)))
     (inst lr mask fixnum-tag-mask)
     (inst andc result temp mask)))
 
@@ -1292,12 +1293,12 @@
          (y :scs (signed-reg)))
   (:arg-types signed-num signed-num (:constant word))
   (:info shift)
-  (:temporary (:sc non-descriptor-reg :from :eval :to :result) temp)
   (:results (result :scs (signed-reg)))
   (:result-types signed-num)
   (:generator 21
-    (inst mulhw temp x y)
-    (inst srawi result temp (min 31 shift))))
+    (inst mulhw result x y)
+    (unless (zerop shift)
+      (inst srawi result result (min 31 shift)))))
 
 #!+multiply-high-vops
 (define-vop (smulhi-shift/c/fx)
@@ -1313,7 +1314,8 @@
   (:result-types fixnum)
   (:generator 16
     (inst mulhw temp x y)
-    (inst srawi temp temp (min 31 shift))
+    (unless (zerop shift)
+      (inst srawi temp temp (min 31 shift)))
     (inst lr mask fixnum-tag-mask)
     (inst andc result temp mask)))
 
@@ -1335,9 +1337,10 @@
     (inst addc lo-temp lo-temp b)
     (inst addze hi hi-temp)
     (inst cmpwi b 0)
-    (inst bge positive)
-    (inst subi hi hi 1))
-    (emit-label positive)))
+    (let ((positive (gen-label)))
+      (inst bge positive)
+      (inst subi hi hi 1)
+      (emit-label positive))))
 
 (define-vop (bignum-lognot lognot-mod32/unsigned=>unsigned)
   (:translate sb!bignum:%lognot))
