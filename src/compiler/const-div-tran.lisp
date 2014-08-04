@@ -170,7 +170,8 @@
     (values (ash high (- delta)) (- max-shift delta))))
 
 ;; Get the multiply and shift value for ceilinged and floored
-;; division by y. Used in gen-ceilinged/floored-div-by-constant-expr.
+;; multiplication by a/y.
+;; Used in gen-ceilinged/floored-div-by-constant-expr.
 (flet ((scale-down (multiplier shift)
          (let ((scale (min shift
                            (integer-length
@@ -179,11 +180,16 @@
            (values (ash multiplier (- scale))
                    (- shift scale)))))
   (macrolet ((choose (neg-low neg-high pos-low pos-high)
-               `(let* ((shift (+ precision (integer-length y-abs)))
-                       (mul-low (* (signum y)
-                                   (if (minusp(* x-sign y)) ,neg-low ,pos-low)))
-                       (mul-high (* (signum y)
-                                    (if (minusp(* x-sign y)) ,neg-high ,pos-high)))
+               `(let* ((a-abs (abs a))
+                       (shift (+ precision (integer-length y)))
+                       (mul-low (* (signum a)
+                                   (if (minusp (* x-sign a))
+                                       ,neg-low
+                                       ,pos-low)))
+                       (mul-high (* (signum a)
+                                    (if (minusp (* x-sign a))
+                                        ,neg-high
+                                        ,pos-high)))
                        (shift-low shift)
                        (shift-high shift))
                   (multiple-value-setq (mul-low shift-low)
@@ -193,26 +199,24 @@
                   (if (< (abs mul-low) (abs mul-high))
                       (values mul-low shift-low)
                       (values mul-high shift-high)))))
-    (defun choose-ceiling-multiplier (y precision x-sign)
-      (let ((y-abs (abs y)))
-        (choose (1+ (floor (expt 2 shift) y-abs))
-                (floor (* (expt 2 shift)
-                          (/ (1+ (expt 2 precision))
-                             (* y-abs (expt 2 precision)))))
-                (ceiling (* (expt 2 shift)
-                            (/ (1- (expt 2 precision))
-                               (* y-abs (expt 2 precision)))))
-                (1- (ceiling (expt 2 shift) y-abs)))))
-    (defun choose-floor-multiplier (y precision x-sign)
-      (let ((y-abs (abs y)))
-        (choose (1+ (floor (* (expt 2 shift)
-                              (/ (1- (expt 2 precision))
-                                 (* y-abs (expt 2 precision))))))
-                (floor (expt 2 shift) y-abs)
-                (ceiling (expt 2 shift) y-abs)
-                (1- (ceiling (* (expt 2 shift)
-                                (/ (1+ (expt 2 precision))
-                                   (* y-abs (expt 2 precision)))))))))))
+    (defun choose-ceiling-multiplier (a y precision x-sign)
+      (choose (1+ (floor (* a-abs (expt 2 shift)) y))
+              (floor (* (expt 2 shift)
+                        (/ (1+ (* a-abs (expt 2 precision)))
+                           (* y (expt 2 precision)))))
+              (ceiling (* (expt 2 shift)
+                          (/ (1- (* a-abs (expt 2 precision)))
+                             (* y (expt 2 precision)))))
+              (1- (ceiling (* a-abs (expt 2 shift)) y))))
+    (defun choose-floor-multiplier (a y precision x-sign)
+      (choose (1+ (floor (* (expt 2 shift)
+                            (/ (1- (* a-abs (expt 2 precision)))
+                               (* y (expt 2 precision))))))
+              (floor (* a-abs (expt 2 shift)) y)
+              (ceiling (* a-abs (expt 2 shift)) y)
+              (1- (ceiling (* (expt 2 shift)
+                              (/ (1+ (* a-abs (expt 2 precision)))
+                                 (* y (expt 2 precision))))))))))
 
 ;;; Get the scaled multiply and shift value that can be used with
 ;;; multiply-high. Used in all the div-by-mul code generators.
@@ -707,9 +711,9 @@
               (x-comp-expr '(plusp x))
               (neg-m) (pos-m) (neg-shift) (pos-shift))
          (multiple-value-setq (neg-m neg-shift)
-           (funcall choose-multiplier-fun y precision -1))
+           (funcall choose-multiplier-fun (signum y) (abs y) precision -1))
          (multiple-value-setq (pos-m pos-shift)
-           (funcall choose-multiplier-fun y precision 1))
+           (funcall choose-multiplier-fun (signum y) (abs y) precision 1))
          (when (and (>= min-x 0) (>= max-x 0))
            (setq neg-m pos-m
                  neg-shift pos-shift
