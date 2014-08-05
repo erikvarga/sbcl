@@ -225,6 +225,81 @@
     (values (* m (ash 1 scale))
             (+ shift scale (- sb!vm:n-word-bits)))))
 
+;;; Generate an expression that performs multiplication by M
+;;; and right-shifting by SHIFT as efficiently as possible.
+;;; When no efficient code sequence is found, return NIL.
+;;; Used in most the div-by-mul code generators.
+(defun gen-multiply-shift-expr (m shift min-x max-x signed-p)
+  (let* ((m-bits (integer-length m))
+         (n (- sb!vm:n-word-bits (if signed-p 1 0)))
+         (max-num (expt 2 n))
+         (mulhi-fun (if signed-p
+                        '%signed-multiply-high
+                        '%multiply-high))
+         (mulhi-shift-fun (if signed-p
+                              '%signed-multiply-high-and-shift
+                              '%multiply-high-and-shift))
+         (mul-add-fun (if signed-p
+                             '%signed-multiply-and-add-high
+                             '%multiply-and-add)))
+    (cond ((and (= m-bits (1+ n))
+                (>= shift sb!vm:n-word-bits))
+           ;; Perform N+1-bit multiply-shift when
+           ;; the multiplier and shift value is
+           ;; large enough.
+           (setq shift (- shift sb!vm:n-word-bits))
+           (if signed-p
+               `(ash (truly-the
+                      sb!vm:signed-word
+                      ,(if (plusp m)
+                           `(+ (%signed-multiply-high
+                                x ,(- m (* 2 max-num)))
+                               x)
+                           `(- (%signed-multiply-high
+                                x ,(+ m (* 2 max-num)))
+                               x)))
+                     ,(- shift))
+               (flet ((word (x)
+                              `(truly-the word ,x)))
+                       `(let ((t1 (%multiply-high x ,(- m max-num))))
+                          (ash ,(word `(+ t1 (ash ,(word `(- x t1))
+                                                  -1)))
+                               ,(- 1 shift))))))
+          ((and (<= m-bits n)
+                (< (* max-x m) max-num)
+                (>= (* min-x m) (- max-num)))
+           ;; If everything fits in a word, we can
+           ;; do the multiplication and shift directly.
+           `(ash (* x ,m) ,(- shift)))
+          ((> (+ m-bits
+                 (max 0 (- sb!vm:n-word-bits shift)))
+              n)
+           ;; If the multiplier used for multiply-high is too
+           ;; large, try to generate a 2N-bit multiply-shift.
+           (let ((shift-rem (- (* 2 sb!vm:n-word-bits) shift)))
+             (if (and (<= m-bits (* 2 sb!vm:n-word-bits))
+                      (< (ash max-x shift-rem) max-num)
+                      (>= (ash min-x shift-rem) (- max-num))
+                      ;; Attempt signed version only if
+                      ;; %SIGNED-MULTIPLY-AND-ADD-HIGH
+                      ;; can be done efficiently.
+                      #!-multiply-high-vops
+                      (not signed-p))
+                 (let ((m-high (* (signum m)
+                                  (ash (abs m) (- sb!vm:n-word-bits))))
+                       (m-low (* (signum m)
+                                 (ldb (byte sb!vm:n-word-bits 0) (abs m)))))
+                   `(let ((x (ash x ,shift-rem)))
+                      (values (,mul-add-fun x ,m-high
+                                            (,mulhi-fun x ,m-low)))))
+                 nil)))
+          (t
+           ;; Since the scaled multiplier fits into
+           ;; a word, we can use multiply-high.
+           (multiple-value-setq (m shift)
+             (get-scaled-multiplier m shift))
+           `(,mulhi-shift-fun x ,m ,shift)))))
+
 ;;; Return an expression to calculate the integer quotient of X and
 ;;; constant Y, using multiplication, shift and add/sub instead of
 ;;; division. Both arguments must be unsigned, fit in a machine word and
@@ -341,41 +416,25 @@
           `(cond ((<= x ,y) 1)
                  ((< x ,(- y)) 0)
                  (t -1)))))
-  (let* ((n (expt 2 (1- sb!vm:n-word-bits)))
-         (expr
-          (multiple-value-bind (m shift)
-              (choose-multiplier 1 (abs y) (max (abs max-x) (abs min-x)))
-            (cond
-              ((and (< (* max-x m) n) (>= (* min-x m) (- n)))
-               `(ash (* num ,m) ,(- shift)))
-              (t
-               (multiple-value-setq (m shift)
-                 (get-scaled-multiplier m shift))
-               (if (>= m n)
-                   `(ash (truly-the
-                          sb!vm:signed-word
-                          (+ num
-                             (%signed-multiply-high num ,(- m (* 2 n)))))
-                         ,(- shift))
-                   ;; Determine the range of the quotient before
-                   ;; the negation and subtraction is applied to it
-                   (let ((max (truncate max-x (abs y)))
-                         (min (1- (truncate min-x (abs y)))))
-                     ;; Explicit TRULY-THE needed to get the FIXNUM=>FIXNUM
-                     ;; VOP.
-                     `(truly-the (integer ,min ,max)
-                                 (%signed-multiply-high-and-shift
-                                  num ,m ,shift)))))))))
+  (let ((expr
+         (multiple-value-bind (m shift)
+             (choose-multiplier 1 (abs y) (max (abs max-x) (abs min-x)))
+           ;; Determine the range of the quotient before
+           ;; the negation and subtraction is applied to it
+           (let ((max (truncate max-x (abs y)))
+                 (min (1- (truncate min-x (abs y)))))
+             `(truly-the (integer ,min ,max)
+                         ,(gen-multiply-shift-expr
+                           m shift min-x max-x t))))))
     (setq expr
-          `(- ,expr (ash num ,(- sb!vm:n-word-bits))))
+          `(- ,expr (ash x ,(- sb!vm:n-word-bits))))
     (when (minusp y)
       (setq expr `(- ,expr)))
     (let ((max (truncate max-x y))
           (min (truncate min-x y)))
       (when (minusp y) (rotatef min max))
-      `(let ((num x))
-         (truly-the (integer ,min ,max)
-                    ,expr)))))
+      `(truly-the (integer ,min ,max)
+                  ,expr))))
 
 ;;; The following two asserts show the expected average case and worst case
 ;;; with respect to the complexity of the generated expression of the previous,
@@ -389,22 +448,21 @@
                  (1- (expt 2 (1- sb!vm:n-word-bits))))))
     (assert (equal
              (gen 11)
-             '(let ((num x))
-               (truly-the (integer -195225786 195225786)
-                (-
-                 (truly-the (integer -195225787 195225786)
-                            (%signed-multiply-high-and-shift num 780903145 1))
-                 (ash num -32))))))
+             '(truly-the (integer -195225786 195225786)
+               (-
+                (truly-the (integer -195225787 195225786)
+                 (%signed-multiply-high-and-shift x 780903145 1))
+                (ash x -32)))))
     (assert (equal
              (gen 7)
-             '(let ((num x))
-               (truly-the (integer -306783378 306783378)
-                (-
+             '(truly-the (integer -306783378 306783378)
+               (-
+                (truly-the (integer -306783379 306783378)
                  (ash
                   (truly-the sb!vm:signed-word
-                             (+ num (%signed-multiply-high num -1840700269)))
-                  -2)
-                 (ash num -32))))))))
+                             (+ (%signed-multiply-high x -1840700269) x))
+                  -2))
+                (ash x -32)))))))
 
 ;;; Return an expression to calculate truncated multiplication of an
 ;;; integer by constant rational A/Y, using multiplication, shift and
@@ -436,58 +494,22 @@
                   m-bits (integer-length m)
                   shift (1- (integer-length scale))
                   y scale))))
-      (let* ((n (expt 2 sb!vm:n-word-bits))
-             (expr
-              (cond ((and (= m-bits (1+ sb!vm:n-word-bits))
-                          (> shift sb!vm:n-word-bits))
-                     ;; Perform N+1-bit multiply-shift when
-                     ;; the multiplier and shift value is
-                     ;; large enough.
-                     (setq shift (- shift sb!vm:n-word-bits))
-                     (flet ((word (x)
-                              `(truly-the word ,x)))
-                       `(let* ((num x)
-                               (t1 (%multiply-high num ,(- m n))))
-                          (ash ,(word `(+ t1 (ash ,(word `(- num t1))
-                                                  -1)))
-                               ,(- 1 shift)))))
-                    ;; If everything fits in a word, we can
-                    ;; do the multiplication and shift directly.
-                    ((and (<= m-bits sb!vm:n-word-bits) (< (* max-x m) n))
-                     `(ash (* x ,m) ,(- shift)))
-                    ((> (+ m-bits
-                           (max 0 (- sb!vm:n-word-bits shift)))
-                        sb!vm:n-word-bits)
-                     ;; If the multiplier used for multiply-high is too
-                     ;; large, try to generate a 2N-bit multiply-shift.
-                     (let ((shift-rem (- (* 2 sb!vm:n-word-bits) shift)))
-                       (cond ((<= (+ shift-rem (integer-length max-x))
-                                  sb!vm:n-word-bits)
-                              (let ((m-high (ash m (- sb!vm:n-word-bits)))
-                                    (m-low (ldb (byte sb!vm:n-word-bits 0) m)))
-                                `(let ((x (ash x ,shift-rem)))
-                                   (values (%multiply-and-add
-                                            x ,m-high
-                                            (%multiply-high x ,m-low))))))
-                             ((> a y)
-                              ;; If that's not possible, and A/Y > 1,
-                              ;; multiply with its integer part and
-                              ;; the remainder separately.
-                              (let ((q (truncate a y)))
-                                `(+ (* x ,q)
-                                    ,(gen-unsigned-mul-by-frac-expr
-                                      (- a (* y q))
-                                      y max-x))))
-                             ;; Otherwise, perform generic
-                             ;; multiplication and shift.
-                             (t
-                              `(ash (* x ,m) ,(- shift))))))
-                    (t
-                     ;; Since the scaled multiplier fits into
-                     ;; a word, we can use multiply-high.
-                     (multiple-value-setq (m shift)
-                       (get-scaled-multiplier m shift))
-                     `(%multiply-high-and-shift x ,m ,shift)))))
+      (let ((expr
+             (gen-multiply-shift-expr m shift 0 max-x nil)))
+        (unless expr
+          (setq expr
+                (if (> a y)
+                    ;; If no multiply-shift code is available,
+                    ;; and A/Y > 1, multiply with its integer part
+                    ;; and the remainder separately.
+                    (let ((q (truncate a y)))
+                      `(+ (* x ,q)
+                          ,(gen-unsigned-mul-by-frac-expr
+                            (- a (* y q))
+                            y max-x)))
+                    ;; Otherwise, perform generic
+                    ;; multiplication and shift.
+                    `(ash (* x ,m) ,(- shift)))))
         `(values (truncate (truly-the (integer 0 ,(truncate (* max-x a) y))
                                       ,expr)
                            ,divisor))))))
@@ -503,10 +525,10 @@
                   '(values
                     (truncate
                      (truly-the (integer 0 1840700269)
-                      (let* ((num x) (t1 (%multiply-high num 3067833783)))
+                      (let ((t1 (%multiply-high x 3067833783)))
                         (ash
                          (truly-the word (+ t1 (ash
-                                                (truly-the word (- num t1)) -1)))
+                                                (truly-the word (- x t1)) -1)))
                          -1)))
                      1))))
   (assert (equal (gen-unsigned-mul-by-frac-expr 7 24 most-positive-word)
@@ -531,77 +553,33 @@
   (multiple-value-bind (m shift)
       (choose-multiplier (abs a) y (max (abs max-x) (abs min-x)))
     (let ((max-product (truncate (* max-x a) y))
-          (min-product (truncate (* min-x a) y)))
+          (min-product (truncate (* min-x a) y))
+          (expr (gen-multiply-shift-expr m shift min-x max-x t)))
       (when (minusp a) (rotatef min-product max-product))
-      (let* ((m-bits (integer-length m))
-             (n (expt 2 (1- sb!vm:n-word-bits)))
-             (expr
-              (cond ((and (= m-bits sb!vm:n-word-bits)
-                          (>= shift sb!vm:n-word-bits))
-                     ;; Perform N+1-bit multiply-shift when
-                     ;; the multiplier and shift value is
-                     ;; large enough.
-                     (setq shift (- shift sb!vm:n-word-bits))
-                     `(ash (truly-the
-                            sb!vm:signed-word
-                            (+ num
-                               (%signed-multiply-high num ,(- m (* 2 n)))))
-                           ,(- shift)))
-                    ;; If everything fits in a word, we can
-                    ;; do the multiplication and shift directly.
-                    ((and (<= m-bits (1- sb!vm:n-word-bits))
-                          (< (* max-x m) n)
-                          (>= (* min-x m) (- n)))
-                     `(ash (* num ,m) ,(- shift)))
-                    ((> (+ m-bits
-                           (max 0 (- sb!vm:n-word-bits shift)))
-                        (1- sb!vm:n-word-bits))
-                     ;; If the multiplier used for multiply-high is too
-                     ;; large, try to generate a 2N-bit multiply-shift.
-                     (let ((shift-rem (- (* 2 sb!vm:n-word-bits) shift)))
-                       (cond
-                         ;; Attempt only if %SIGNED-MULTIPLY-AND-ADD-HIGH
-                         ;; can be done efficiently.
-                         #!+multiply-high-vops
-                         ((and (< (ash max-x shift-rem) n)
-                               (>= (ash min-x shift-rem) (- n)))
-                          (let ((m-high (ash m (- sb!vm:n-word-bits)))
-                                (m-low (ldb (byte sb!vm:n-word-bits 0) m)))
-                            `(let ((x (ash x ,shift-rem)))
-                               (%signed-multiply-and-add-high
-                                x ,m-high
-                                (%signed-multiply-high x ,m-low)))))
-                         ((> (abs a) y)
-                          ;; If that's not possible, and ABS(A/Y) > 1,
-                          ;; multiply with its integer part and
-                          ;; the remainder separately.
-                          (let ((q (truncate a y)))
-                            (return-from gen-signed-mul-by-frac-expr
-                              `(truly-the (integer ,min-product ,max-product)
-                                          (+ (* x ,q)
-                                             ,(gen-signed-mul-by-frac-expr
-                                               (- a (* y q))
-                                               y min-x max-x))))))
-                         ;; Otherwise, perform generic
-                         ;; multiplication and shift.
-                         (t
-                          `(ash (* num ,m) ,(- shift))))))
-                    (t
-                     ;; Since the scaled multiplier fits into
-                     ;; a word, we can use multiply-high.
-                     (multiple-value-setq (m shift)
-                       (get-scaled-multiplier m shift))
-                     `(%signed-multiply-high-and-shift num ,m ,shift)))))
-        (let ((max (truncate (* max-x (abs a)) y))
-              (min (1- (truncate (* min-x (abs a)) y))))
-          (setq expr
-                `(- (truly-the (integer ,min ,max) ,expr)
-                    (ash num ,(- sb!vm:n-word-bits)))))
-        (when (minusp a)
-          (setq expr `(- ,expr)))
-        `(let ((num x))
-           (truly-the (integer ,min-product ,max-product)
-                      ,expr))))))
+      (unless expr
+        (if (> (abs a) y)
+            ;; If no multiply-shift code is available,
+            ;; and ABS(A/Y) > 1, multiply with its
+            ;; integer part and the remainder separately.
+            (let ((q (truncate a y)))
+              (return-from gen-signed-mul-by-frac-expr
+                `(truly-the (integer ,min-product ,max-product)
+                            (+ (* x ,q)
+                               ,(gen-signed-mul-by-frac-expr
+                                 (- a (* y q))
+                                 y min-x max-x)))))
+            ;; Otherwise, perform generic
+            ;; multiplication and shift.
+            (setq expr `(ash (* x ,m) ,(- shift)))))
+      (let ((max (truncate (* max-x (abs a)) y))
+            (min (1- (truncate (* min-x (abs a)) y))))
+        (setq expr
+              `(- (truly-the (integer ,min ,max) ,expr)
+                  (ash x ,(- sb!vm:n-word-bits)))))
+      (when (minusp a)
+        (setq expr `(- ,expr)))
+        `(truly-the (integer ,min-product ,max-product)
+                    ,expr))))
 
 ;;; The following asserts show some of the average cases and the worst case
 ;;; with respect to the complexity of the generated expression of the previous,
@@ -614,36 +592,33 @@
                  (- (expt 2 (1- sb!vm:n-word-bits)))
                  (1- (expt 2 (1- sb!vm:n-word-bits))))))
     (assert (equal (gen -2 3)
-                   '(let ((num x))
-                     (truly-the (integer -1431655764 1431655765)
+                   '(truly-the (integer -1431655764 1431655765)
+                     (-
                       (-
-                       (-
-                        (truly-the (integer -1431655766 1431655764)
-                         (ash
-                          (truly-the sb!vm:signed-word
-                                     (+ num
-                                        (%signed-multiply-high num
-                                                               -1431655765)))
-                          0))
-                        (ash num -32)))))))
+                       (truly-the (integer -1431655766 1431655764)
+                        (ash
+                         (truly-the sb!vm:signed-word
+                                    (+ (%signed-multiply-high x
+                                                              -1431655765)
+                                       x))
+                         0))
+                       (ash x -32))))))
     (assert (equal (gen 346 69)
                    '(truly-the (integer -10768541191 10768541186)
                      (+ (* x 5)
-                      (let ((num x))
-                        (truly-the (integer -31122951 31122951)
-                         (-
-                          (truly-the (integer -31122952 31122951)
-                           (%signed-multiply-high-and-shift num
-                                                            1991868891
-                                                            5))
-                          (ash num -32))))))))
+                      (truly-the (integer -31122951 31122951)
+                       (-
+                        (truly-the (integer -31122952 31122951)
+                         (%signed-multiply-high-and-shift x
+                                                          1991868891
+                                                          5))
+                        (ash x -32)))))))
     (assert (equal (gen 8 9)
-                   '(let ((num x))
-                     (truly-the (integer -1908874353 1908874352)
-                      (-
-                       (truly-the (integer -1908874354 1908874352)
-                        (ash (* num 15270994831) -34))
-                       (ash num -32))))))))
+                   '(truly-the (integer -1908874353 1908874352)
+                     (-
+                      (truly-the (integer -1908874354 1908874352)
+                       (ash (* x 15270994831) -34))
+                      (ash x -32)))))))
 
 ;;; Return an expression for calculating the quotient like in the previous
 ;;; function, but the quotient is rounded towards positive or negative infinity.
@@ -662,36 +637,8 @@
 ;;; It is possible that the function has to use an N+1 bit multiplier that
 ;;; doesn't fit in a word. This is handled similarly as in the truncate code
 ;;; generator.
-(labels
-    ((get-direct-multiply-expr (m shift)
-       `(ash (* x ,m) ,(- shift)))
-     (get-mulhi-expr (m shift n-min n-max signed-p)
-       (if (or (>= m n-max)
-               (< m n-min))
-           (flet ((word (x)
-                    `(truly-the ,(if signed-p 'sb!vm:signed-word 'word) ,x)))
-             (if signed-p
-                 `(let ((num x))
-                    (ash
-                     ,(if (plusp m)
-                          `(+ (%signed-multiply-high
-                               num ,(- m (expt 2 sb!vm:n-word-bits)))
-                              num)
-                          `(- (%signed-multiply-high
-                               num ,(+ m (expt 2 sb!vm:n-word-bits)))
-                              num))
-                     ,(- shift)))
-                 `(let* ((num x)
-                         (t1 (%multiply-high
-                              num ,(- m (expt 2 sb!vm:n-word-bits)))))
-                    (ash ,(word `(+ t1 (ash ,(word `(- num t1))
-                                            -1)))
-                         ,(- 1 shift)))))
-           `(,(if signed-p
-                  '%signed-multiply-high-and-shift
-                  '%multiply-high-and-shift)
-              x ,m ,shift)))
-     (gen (y min-x max-x
+(flet
+    ((gen (y min-x max-x
              choose-multiplier-fun large-y-expr
              min-quot max-quot)
        (declare (type (or (integer #.(- (expt 2 (1- sb!vm:n-word-bits))) -3)
@@ -700,11 +647,6 @@
        (aver (<= min-x max-x))
        (aver (not (zerop (logand y (1- y)))))
        (let* ((signed-p (or (minusp min-x) (minusp y)))
-              (n-min (if signed-p
-                         (- (expt 2 (1- sb!vm:n-word-bits)))
-                         0))
-              (n-max (expt 2 (- sb!vm:n-word-bits
-                                (if signed-p 1 0))))
               (precision (integer-length
                           (1- (max (abs min-x)
                                    (abs max-x)))))
@@ -722,36 +664,18 @@
            (setq pos-m neg-m
                  pos-shift neg-shift
                  x-comp-expr nil))
-         (cond
-           ((> (abs y) (ash n-max -1))
-            ;; When Y is above 2^(W-1), there are only a few
-            ;; possible results, and we can use comparisons
-            ;; to determine the correct one.
-            large-y-expr)
-           ((if (plusp y)
-                (and (< (* max-x (max pos-m neg-m)) n-max)
-                     (>= (* min-x (min pos-m neg-m)) n-min))
-                (and (< (* min-x (min pos-m neg-m)) n-max)
-                     (>= (* max-x (max pos-m neg-m)) n-min)))
-            `(truly-the (integer ,min-quot ,max-quot)
-                        (if ,x-comp-expr
-                            ,(get-direct-multiply-expr pos-m pos-shift)
-                            ,(get-direct-multiply-expr neg-m neg-shift))))
-           (t
-            (multiple-value-setq (pos-m pos-shift)
-              (get-scaled-multiplier pos-m pos-shift))
-            (multiple-value-setq (neg-m neg-shift)
-              (get-scaled-multiplier neg-m neg-shift))
-            `(truly-the (integer ,min-quot ,max-quot)
-                        (if ,x-comp-expr
-                            ,(get-mulhi-expr
-                              pos-m pos-shift
-                              n-min n-max
-                              signed-p)
-                            ,(get-mulhi-expr
-                              neg-m neg-shift
-                              n-min n-max
-                              signed-p))))))))
+         (if (> (abs y) (expt 2 (- sb!vm:n-word-bits
+                                    (if signed-p 2 1))))
+             ;; When Y is above 2^(W-1), there are only a few
+             ;; possible results, and we can use comparisons
+             ;; to determine the correct one.
+             large-y-expr
+             `(truly-the (integer ,min-quot ,max-quot)
+                 (if ,x-comp-expr
+                     ,(gen-multiply-shift-expr
+                       pos-m pos-shift min-x max-x signed-p)
+                     ,(gen-multiply-shift-expr
+                       neg-m neg-shift min-x max-x signed-p)))))))
   (defun gen-ceilinged-div-by-constant-expr (y min-x max-x)
     (let ((min (1- (ceiling min-x y)))
           (max (1- (ceiling max-x y))))
@@ -814,13 +738,15 @@
              (gen 11 ceiling unsigned)
              '(truly-the (integer 0 390451572)
                (if t
-                   (let* ((num x) (t1 (%multiply-high num 1952257861)))
+                   (let ((t1 (%multiply-high x 1952257861)))
                      (ash
-                      (truly-the word (+ t1 (ash (truly-the word (- num t1)) -1)))
+                      (truly-the word
+                        (+ t1 (ash (truly-the word (- x t1)) -1)))
                       -3))
-                   (let* ((num x) (t1 (%multiply-high num 1952257861)))
+                   (let ((t1 (%multiply-high x 1952257861)))
                      (ash
-                      (truly-the word (+ t1 (ash (truly-the word (- num t1)) -1)))
+                      (truly-the word
+                        (+ t1 (ash (truly-the word (- x t1)) -1)))
                       -3))))))
     ;; signed ceiling:
     (assert (equal
@@ -834,8 +760,10 @@
              '(truly-the (integer -306783379 306783378)
                (if (plusp x)
                    (%signed-multiply-high-and-shift x 1227133513 1)
-                   (let ((num x))
-                     (ash (+ (%signed-multiply-high num -1840700269) num) -2))))))
+                   (ash
+                    (truly-the sb!vm:signed-word
+                      (+ (%signed-multiply-high x -1840700269) x))
+                    -2)))))
     ;; unsigned floor:
     (assert (equal
              (gen 11 floor unsigned)
@@ -847,19 +775,15 @@
              (gen 7 floor unsigned)
              '(truly-the (integer 0 613566756)
                (if t
-                   (let* ((num x)
-                          (t1 (%multiply-high num 613566757)))
+                   (let ((t1 (%multiply-high x 613566757)))
                      (ash
-                      (truly-the word (+ t1
-                                         (ash (truly-the word (- num t1))
-                                              -1)))
+                      (truly-the word
+                        (+ t1 (ash (truly-the word (- x t1)) -1)))
                       -2))
-                   (let* ((num x)
-                          (t1 (%multiply-high num 613566757)))
+                   (let ((t1 (%multiply-high x 613566757)))
                      (ash
-                      (truly-the word (+ t1
-                                         (ash (truly-the word (- num t1))
-                                              -1)))
+                      (truly-the word
+                        (+ t1 (ash (truly-the word (- x t1)) -1)))
                       -2))))))
     ;; signed floor:
     (assert (equal
@@ -872,8 +796,10 @@
              (gen 7 floor signed)
              '(truly-the (integer -306783379 306783378)
                (if (plusp x)
-                   (let ((num x))
-                     (ash (+ (%signed-multiply-high num -1840700269) num) -2))
+                   (ash
+                    (truly-the sb!vm:signed-word
+                      (+ (%signed-multiply-high x -1840700269) x))
+                    -2)
                    (%signed-multiply-high-and-shift x 1227133513 1)))))))
 
 ;;; If the divisor is constant and both args are positive and fit in a
