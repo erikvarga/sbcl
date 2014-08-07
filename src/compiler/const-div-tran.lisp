@@ -474,12 +474,12 @@
       (choose-multiplier a y max-x)
     (let ((s (expt 2 shift)))
       (when (> s (truncate (* m max-x) 3))
-     ;; When the shift value is large enough, it's faster
-     ;; to determine the quotient with comparisons.
-     (return-from gen-unsigned-mul-by-frac-expr
-         `(cond ((< x ,(ceiling s m)) 0)
-                ((< x ,(ceiling (* s 2) m)) 1)
-                (t 2)))))
+        ;; When the shift value is large enough, it's faster
+        ;; to determine the quotient with comparisons.
+        (return-from gen-unsigned-mul-by-frac-expr
+          `(cond ((< x ,(ceiling s m)) 0)
+                 ((< x ,(ceiling (* s 2) m)) 1)
+                 (t 2)))))
     (let ((divisor 1)
           (m-bits (integer-length m)))
       (when (and (> m-bits (1+ sb!vm:n-word-bits)) (evenp y))
@@ -552,6 +552,14 @@
   (aver (<= min-x max-x))
   (multiple-value-bind (m shift)
       (choose-multiplier (abs a) y (max (abs max-x) (abs min-x)))
+    (let ((s (expt 2 shift)))
+      (when (and (>= (* min-x m) (* s -2)) (< (* max-x m) (* s 2)))
+        ;; When the shift value is large enough, it's faster
+        ;; to determine the quotient with comparisons.
+        (return-from gen-signed-mul-by-frac-expr
+          `(cond ((< x ,(ceiling (* s -1) m)) ,(- (signum a)))
+                 ((< x ,(ceiling s m)) 0)
+                 (t ,(signum a))))))
     (let ((max-product (truncate (* max-x a) y))
           (min-product (truncate (* min-x a) y))
           (expr (gen-multiply-shift-expr m shift min-x max-x t)))
@@ -690,9 +698,7 @@
                      ,(funcall gen-fun
                                (signum divisor) (abs divisor)
                                min-x max-x)))))))
-     (gen (div-fun a y min-x max-x
-                   large-y-expr
-                   min-quot max-quot)
+     (gen (div-fun a y min-x max-x min-quot max-quot)
        (declare (type (or sb!vm:signed-word word) a y min-x max-x))
        (aver (<= min-x max-x))
        (aver (not (and (= (abs a) 1 ) (zerop (logand y (1- y))))))
@@ -718,54 +724,64 @@
            (setq pos-m neg-m
                  pos-shift neg-shift
                  x-comp-expr nil))
-         (if (and (> y (expt 2 (- sb!vm:n-word-bits
-                             (if signed-p 2 1))))
-                  (= (abs a) 1))
-             ;; When Y is above 2^(W-1), there are only a few
-             ;; possible results, and we can use comparisons
-             ;; to determine the correct one.
-             large-y-expr
-             `(truly-the (integer ,min-quot ,max-quot)
-                 (if ,x-comp-expr
-                     ,(gen-core-expr
-                       div-fun a y pos-m pos-shift 0 max-x signed-p
-                       choose-multiplier-fun precision)
-                     ,(gen-core-expr
-                       div-fun a y neg-m neg-shift min-x 0 signed-p
-                       choose-multiplier-fun precision))))))
+         `(truly-the (integer ,min-quot ,max-quot)
+             (if ,x-comp-expr
+                 ,(gen-core-expr
+                   div-fun a y pos-m pos-shift 0 max-x signed-p
+                   choose-multiplier-fun precision)
+                 ,(gen-core-expr
+                   div-fun a y neg-m neg-shift min-x 0 signed-p
+                   choose-multiplier-fun precision)))))
      (gen-ceiling (a y min-x max-x)
        (let ((min (1- (ceiling (* a min-x) y)))
              (max (1- (ceiling (* a max-x) y))))
          (when (minusp a) (rotatef min max))
          (unless (or (minusp a) (minusp min-x))
            (setq min (max 0 min)))
-         (gen 'ceiling a y min-x max-x
-              (if (plusp a)
-                  `(cond ((> x ,y) 1)
-                         ((>= x 0) 0)
-                         ((> x ,(- y)) -1)
-                         (t -2))
-                  `(cond ((< x ,(- y)) 1)
-                         ((<= x 0) 0)
-                         ((< x ,y) -1)
-                         (t -2)))
-              min max)))
+         (let ((comp-limit (/ (* 2 y) a)))
+           ;; When A/Y is small enough, there are only a few
+           ;; possible results, and we can use comparisons
+           ;; to determine the correct one.
+           (if (if (plusp a)
+                   (and (< max-x comp-limit)
+                        (>= min-x (- comp-limit)))
+                   (and (<= max-x (- comp-limit))
+                        (> min-x comp-limit)))
+               `(truly-the (integer ,min ,max)
+                   ,(if (plusp a)
+                        `(cond ((<= x ,(ceiling (- y) a)) -2)
+                               ((<= x 0) -1)
+                               ((<= x ,(ceiling y a)) 0)
+                               (t 1))
+                        `(cond ((<= x ,(1- (ceiling y a))) 1)
+                               ((< x 0) 0)
+                               ((<= x ,(1- (ceiling (- y) a))) -1)
+                               (t -2))))
+               (gen 'ceiling a y min-x max-x min max)))))
      (gen-floor (a y min-x max-x)
        (let ((min (floor (* a min-x) y))
              (max (floor (* a max-x) y)))
          (when (minusp a) (rotatef min max))
-         (gen 'floor
-              a y min-x max-x
-              (if (plusp a)
-                  `(cond ((>= x ,y) 1)
-                         ((>= x 0) 0)
-                         ((>= x ,(- y)) -1)
-                         (t -2))
-                  `(cond ((<= x ,(- y)) 1)
-                         ((<= x 0) 0)
-                         ((<= x ,y) -1)
-                         (t -2)))
-              min max))))
+         (let ((comp-limit (/ (* 2 y) a)))
+           ;; When A/Y is small enough, there are only a few
+           ;; possible results, and we can use comparisons
+           ;; to determine the correct one.
+           (if (if (plusp a)
+                 (and (< max-x comp-limit)
+                      (>= min-x (- comp-limit)))
+                 (and (<= max-x (- comp-limit))
+                      (> min-x comp-limit)))
+               `(truly-the (integer ,min ,max)
+                   ,(if (plusp a)
+                        `(cond ((<= x ,(1- (ceiling (- y) a))) -2)
+                               ((< x 0) -1)
+                               ((<= x ,(1- (ceiling y a))) 0)
+                               (t 1))
+                        `(cond ((<= x ,(ceiling y a)) 1)
+                               ((<= x 0) 0)
+                               ((<= x ,(ceiling (- y) a)) -1)
+                               (t -2))))
+               (gen 'floor a y min-x max-x min max))))))
   (defun gen-ceilinged-mul-by-frac-expr (a y min-x max-x)
     (gen-ceiling a y min-x max-x))
   (defun gen-floored-mul-by-frac-expr (a y min-x max-x)
