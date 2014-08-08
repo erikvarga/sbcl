@@ -243,7 +243,7 @@
                              '%signed-multiply-and-add-high
                              '%multiply-and-add)))
     (cond ((and (= m-bits (1+ n))
-                (>= shift sb!vm:n-word-bits))
+                (>= shift (1+ n)))
            ;; Perform N+1-bit multiply-shift when
            ;; the multiplier and shift value is
            ;; large enough.
@@ -260,11 +260,11 @@
                                x)))
                      ,(- shift))
                (flet ((word (x)
-                              `(truly-the word ,x)))
-                       `(let ((t1 (%multiply-high x ,(- m max-num))))
-                          (ash ,(word `(+ t1 (ash ,(word `(- x t1))
-                                                  -1)))
-                               ,(- 1 shift))))))
+                        `(truly-the word ,x)))
+                 `(let ((t1 (%multiply-high x ,(- m max-num))))
+                    (ash ,(word `(+ t1 (ash ,(word `(- x t1))
+                                            -1)))
+                         ,(- 1 shift))))))
           ((and (<= m-bits n)
                 (< (* max-x m) max-num)
                 (>= (* min-x m) (- max-num)))
