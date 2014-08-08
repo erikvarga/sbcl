@@ -230,75 +230,90 @@
 ;;; When no efficient code sequence is found, return NIL.
 ;;; Used in most the div-by-mul code generators.
 (defun gen-multiply-shift-expr (m shift min-x max-x signed-p)
-  (let* ((m-bits (integer-length m))
-         (n (- sb!vm:n-word-bits (if signed-p 1 0)))
-         (max-num (expt 2 n))
-         (mulhi-fun (if signed-p
-                        '%signed-multiply-high
-                        '%multiply-high))
-         (mulhi-shift-fun (if signed-p
-                              '%signed-multiply-high-and-shift
-                              '%multiply-high-and-shift))
-         (mul-add-fun (if signed-p
-                             '%signed-multiply-and-add-high
-                             '%multiply-and-add)))
-    (cond ((and (= m-bits (1+ n))
-                (>= shift (1+ n)))
-           ;; Perform N+1-bit multiply-shift when
-           ;; the multiplier and shift value is
-           ;; large enough.
-           (setq shift (- shift sb!vm:n-word-bits))
-           (if signed-p
-               `(ash (truly-the
-                      sb!vm:signed-word
-                      ,(if (plusp m)
-                           `(+ (%signed-multiply-high
-                                x ,(- m (* 2 max-num)))
-                               x)
-                           `(- (%signed-multiply-high
-                                x ,(+ m (* 2 max-num)))
-                               x)))
-                     ,(- shift))
-               (flet ((word (x)
-                        `(truly-the word ,x)))
-                 `(let ((t1 (%multiply-high x ,(- m max-num))))
-                    (ash ,(word `(+ t1 (ash ,(word `(- x t1))
-                                            -1)))
-                         ,(- 1 shift))))))
-          ((and (<= m-bits n)
-                (< (* max-x m) max-num)
-                (>= (* min-x m) (- max-num)))
-           ;; If everything fits in a word, we can
-           ;; do the multiplication and shift directly.
-           `(ash (* x ,m) ,(- shift)))
-          ((> (+ m-bits
-                 (max 0 (- sb!vm:n-word-bits shift)))
-              n)
-           ;; If the multiplier used for multiply-high is too
-           ;; large, try to generate a 2N-bit multiply-shift.
-           (let ((shift-rem (- (* 2 sb!vm:n-word-bits) shift)))
-             (if (and (<= m-bits (* 2 sb!vm:n-word-bits))
-                      (< (ash max-x shift-rem) max-num)
-                      (>= (ash min-x shift-rem) (- max-num))
+  (multiple-value-bind (scaled-m scaled-shift)
+      (get-scaled-multiplier m shift)
+    (let* ((scaled-m-bits (integer-length scaled-m))
+           (n (- sb!vm:n-word-bits (if signed-p 1 0)))
+           (max-num (expt 2 n))
+           (mulhi-fun (if signed-p
+                          '%signed-multiply-high
+                          '%multiply-high))
+           (mulhi-shift-fun (if signed-p
+                                '%signed-multiply-high-and-shift
+                                '%multiply-high-and-shift))
+           (mul-add-fun (if signed-p
+                            '%signed-multiply-and-add-high
+                            '%multiply-and-add)))
+      (cond ((and (= scaled-m-bits (1+ n))
+                  (>= (+ scaled-shift sb!vm:n-word-bits) (1+ n)))
+             ;; Perform N+1-bit multiply-shift when
+             ;; the multiplier and shift value is
+             ;; large enough.
+             (if signed-p
+                 `(ash (truly-the
+                        sb!vm:signed-word
+                        ,(if (plusp scaled-m)
+                             `(+ (%signed-multiply-high
+                                  x ,(- scaled-m (* 2 max-num)))
+                                 x)
+                             `(- (%signed-multiply-high
+                                  x ,(+ scaled-m (* 2 max-num)))
+                                 x)))
+                       ,(- scaled-shift))
+                 (flet ((word (x)
+                          `(truly-the word ,x)))
+                   `(let ((t1 (%multiply-high x ,(- scaled-m max-num))))
+                      (ash ,(word `(+ t1 (ash ,(word `(- x t1))
+                                              -1)))
+                           ,(- 1 scaled-shift))))))
+            ((and (<= (integer-length m) n)
+                  (< (* max-x m) max-num)
+                  (>= (* min-x m) (- max-num)))
+             ;; If everything fits in a word, we can
+             ;; do the multiplication and shift directly.
+             `(ash (* x ,m) ,(- shift)))
+            ((> scaled-m-bits n)
+             ;; If the multiplier used for multiply-high is too
+             ;; large, try to generate a 2N-bit multiply-shift.
+             (setq scaled-shift
+                   (max shift
+                        (+ sb!vm:n-word-bits
+                           (max (integer-length min-x)
+                                (integer-length max-x))
+                           (if signed-p 1 0)))
+                   scaled-m
+                   (ash m (- scaled-shift shift)))
+             (if (and (<= shift scaled-shift)
+                      (<= (integer-length scaled-m) (+ sb!vm:n-word-bits n))
                       ;; Attempt signed version only if
                       ;; %SIGNED-MULTIPLY-AND-ADD-HIGH
                       ;; can be done efficiently.
                       #!-multiply-high-vops
                       (not signed-p))
-                 (let ((m-high (* (signum m)
-                                  (ash (abs m) (- sb!vm:n-word-bits))))
-                       (m-low (* (signum m)
-                                 (ldb (byte sb!vm:n-word-bits 0) (abs m)))))
-                   `(let ((x (ash x ,shift-rem)))
-                      (values (,mul-add-fun x ,m-high
-                                            (,mulhi-fun x ,m-low)))))
-                 nil)))
-          (t
-           ;; Since the scaled multiplier fits into
-           ;; a word, we can use multiply-high.
-           (multiple-value-setq (m shift)
-             (get-scaled-multiplier m shift))
-           `(,mulhi-shift-fun x ,m ,shift)))))
+                 (let ((shift-rem (- (* 2 sb!vm:n-word-bits) scaled-shift)))
+                   (let ((m-high (* (signum scaled-m)
+                                    (ash (abs scaled-m) (- sb!vm:n-word-bits))))
+                         (m-low (* (signum scaled-m)
+                                   (ldb (byte sb!vm:n-word-bits 0)
+                                        (abs scaled-m)))))
+                     (if (and (typep m-high 'sb!vm:signed-word)
+                              (typep m-low 'sb!vm:signed-word))
+                         `(let ((x (ash x ,shift-rem)))
+                            ,(if (< (+ (max (integer-length (* min-x m-low))
+                                            (integer-length (* max-x m-low)))
+                                       shift-rem)
+                                    sb!vm:n-word-bits)
+                                 ;; There's no need to add the second
+                                 ;; product if it's always 0.
+                                 `(,mulhi-fun x ,m-high)
+                                 `(values (,mul-add-fun x ,m-high
+                                              (,mulhi-fun x ,m-low)))))
+                         nil)))
+                 nil))
+            (t
+             ;; Since the scaled multiplier fits into
+             ;; a word, we can use multiply-high.
+             `(,mulhi-shift-fun x ,scaled-m ,scaled-shift))))))
 
 ;;; Return an expression to calculate the integer quotient of X and
 ;;; constant Y, using multiplication, shift and add/sub instead of
