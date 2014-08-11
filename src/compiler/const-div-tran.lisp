@@ -664,25 +664,26 @@
     ((gen-core-expr (div-fun a y m shift min-x max-x signed-p
                      choose-multiplier-fun precision)
        (let ((divisor 1)
-             (corr (if (eq div-fun 'ceiling) 1 0))
              (gen-fun (if (eq div-fun 'ceiling)
                           #'gen-ceiling
                           #'gen-floor))
              (m-bits (integer-length m))
              (scale (logand y (- y))))
-         (when (and (> m-bits (1+ sb!vm:n-word-bits)) (evenp y))
-           (when (and (> (abs a) 1)
-                      (< a scale))
-             ;; When the Y is a multiple of 2^P, generate
-             ;; a multiplication by A/2^P and a
-             ;; floored/ceilinged division by Y/2^P.
-             (setq divisor (/ y scale)
-                   y scale)
-             (multiple-value-setq (m shift)
-               (funcall choose-multiplier-fun a y precision
-                        (+ (signum min-x)
-                           (signum max-x))))
-             (setq m-bits (integer-length m))))
+         (when (and (eq div-fun 'floor)
+                    (> m-bits (1+ sb!vm:n-word-bits)) (evenp y)
+                    (< 1 (abs a) scale))
+           ;; When the Y is a multiple of 2^P, generate
+           ;; a multiplication by A/2^P and a
+           ;; floored/ceilinged division by Y/2^P.
+           ;; Only attempt when floored multiplication
+           ;; is generated.
+           (setq divisor (/ y scale)
+                 y scale)
+           (multiple-value-setq (m shift)
+             (funcall choose-multiplier-fun a y precision
+                      (+ (signum min-x)
+                         (signum max-x))))
+           (setq m-bits (integer-length m)))
          (let ((expr
                 (gen-multiply-shift-expr m shift min-x max-x signed-p)))
            (unless expr
@@ -700,7 +701,7 @@
                  ;; multiplication and shift.
                  (setq expr `(ash (* x ,m) ,(- shift)))))
            (cond ((= 1 divisor) expr)
-                 ;; Perform the  division by Y/2^P.
+                 ;; Perform the division by Y/2^P.
                  (t
                   (setq min-x
                         (funcall div-fun
@@ -708,46 +709,61 @@
                         max-x
                         (funcall div-fun
                                  (* max-x (/ a scale))))
+                  (when (minusp a) (rotatef min-x max-x))
                   `(let ((x (truly-the (integer ,min-x ,max-x)
-                                       (+ ,corr ,expr))))
+                                       (+ ,(if (eq div-fun 'ceiling) 1 0)
+                                          ,expr))))
                      ,(funcall gen-fun
                                (signum divisor) (abs divisor)
                                min-x max-x)))))))
-     (gen (div-fun a y min-x max-x min-quot max-quot)
+     (gen (div-fun a y min-x max-x min-res max-res)
        (declare (type (or sb!vm:signed-word word) a y min-x max-x))
        (aver (<= min-x max-x))
-       (aver (not (and (= (abs a) 1 ) (zerop (logand y (1- y))))))
-       (let* ((choose-multiplier-fun
-               (if (eq div-fun 'ceiling)
-                   'choose-ceiling-multiplier
-                   'choose-floor-multiplier))
-              (signed-p (or (minusp min-x) (minusp a)))
-              (precision (integer-length
-                          (1- (max (abs min-x)
-                                   (abs max-x)))))
-              (x-comp-expr '(plusp x))
-              (neg-m) (pos-m) (neg-shift) (pos-shift))
-         (multiple-value-setq (neg-m neg-shift)
-           (funcall choose-multiplier-fun a y precision -1))
-         (multiple-value-setq (pos-m pos-shift)
-           (funcall choose-multiplier-fun a y precision 1))
-         (when (and (>= min-x 0) (>= max-x 0))
-           (setq neg-m pos-m
-                 neg-shift pos-shift
-                 x-comp-expr t))
-         (when (and (<= min-x 0) (<= max-x 0))
-           (setq pos-m neg-m
-                 pos-shift neg-shift
-                 x-comp-expr nil))
-         `(truly-the (integer ,min-quot ,max-quot)
-             (if ,x-comp-expr
-                 ,(gen-core-expr
-                   div-fun a y pos-m pos-shift 0 max-x signed-p
-                   choose-multiplier-fun precision)
-                 ,(gen-core-expr
-                   div-fun a y neg-m neg-shift min-x 0 signed-p
-                   choose-multiplier-fun precision)))))
+       (cond
+         ((= 1 y) `(- (* x ,a) ,(if (eq div-fun 'ceiling) 1 0)))
+         ((and (= (abs a) 1) (zerop (logand y (1- y))))
+          ;; When the multiplicand is of the form 1/2^P, generate
+          ;; a floored or ceilinged division by 2^P. This gets
+          ;; transformed into faster operations later on.
+          ;; Since the function must return one less than the
+          ;; actual result of the ceilinged division, we subtract
+          ;; one from the result in case of ceiling.
+          `(truly-the (integer ,min-res ,max-res)
+              (- (,div-fun x ,(* (signum a) y))
+                 ,(if (eq div-fun 'ceiling) 1 0))))
+         (t
+          (let* ((choose-multiplier-fun
+                  (if (eq div-fun 'ceiling)
+                      'choose-ceiling-multiplier
+                      'choose-floor-multiplier))
+                 (signed-p (or (minusp min-x) (minusp a)))
+                 (precision (integer-length
+                             (1- (max (abs min-x)
+                                      (abs max-x)))))
+                 (x-comp-expr '(plusp x))
+                 (neg-m) (pos-m) (neg-shift) (pos-shift))
+            (multiple-value-setq (neg-m neg-shift)
+              (funcall choose-multiplier-fun a y precision -1))
+            (multiple-value-setq (pos-m pos-shift)
+              (funcall choose-multiplier-fun a y precision 1))
+            (when (and (>= min-x 0) (>= max-x 0))
+              (setq neg-m pos-m
+                    neg-shift pos-shift
+                    x-comp-expr t))
+            (when (and (<= min-x 0) (<= max-x 0))
+              (setq pos-m neg-m
+                    pos-shift neg-shift
+                    x-comp-expr nil))
+            `(truly-the (integer ,min-res ,max-res)
+                        (if ,x-comp-expr
+                            ,(gen-core-expr
+                              div-fun a y pos-m pos-shift 0 max-x signed-p
+                              choose-multiplier-fun precision)
+                            ,(gen-core-expr
+                              div-fun a y neg-m neg-shift min-x 0 signed-p
+                              choose-multiplier-fun precision)))))))
      (gen-ceiling (a y min-x max-x)
+       (aver (plusp y))
        (let ((min (1- (ceiling (* a min-x) y)))
              (max (1- (ceiling (* a max-x) y))))
          (when (minusp a) (rotatef min max))
@@ -768,12 +784,13 @@
                                ((<= x 0) -1)
                                ((<= x ,(ceiling y a)) 0)
                                (t 1))
-                        `(cond ((<= x ,(1- (ceiling y a))) 1)
+                        `(cond ((< x ,(ceiling y a)) 1)
                                ((< x 0) 0)
-                               ((<= x ,(1- (ceiling (- y) a))) -1)
+                               ((< x ,(ceiling (- y) a)) -1)
                                (t -2))))
                (gen 'ceiling a y min-x max-x min max)))))
      (gen-floor (a y min-x max-x)
+       (aver (plusp y))
        (let ((min (floor (* a min-x) y))
              (max (floor (* a max-x) y)))
          (when (minusp a) (rotatef min max))
@@ -788,9 +805,9 @@
                       (> min-x comp-limit)))
                `(truly-the (integer ,min ,max)
                    ,(if (plusp a)
-                        `(cond ((<= x ,(1- (ceiling (- y) a))) -2)
+                        `(cond ((< x ,(ceiling (- y) a)) -2)
                                ((< x 0) -1)
-                               ((<= x ,(1- (ceiling y a))) 0)
+                               ((< x ,(ceiling y a)) 0)
                                (t 1))
                         `(cond ((<= x ,(ceiling y a)) 1)
                                ((<= x 0) 0)
@@ -1132,8 +1149,8 @@
 (macrolet
     ((def (ceiling-p signed-p)
        (let ((word-type (if signed-p
-                            ''sb!vm:signed-word
-                            ''word))
+                            'sb!vm:signed-word
+                            'word))
              (gen-fun (if ceiling-p
                           'gen-ceilinged-mul-by-frac-expr
                           'gen-floored-mul-by-frac-expr)))
@@ -1159,13 +1176,18 @@
                                ,(if signed-p
                                     '(- (expt 2 (1- sb!vm:n-word-bits)))
                                     0))))
-              (unless (and (typep num ,word-type)
-                           (typep denom ,word-type))
+              (unless (and (typep num ',word-type)
+                           (typep denom ',word-type))
                 (give-up-ir1-transform))
-              `(let* ((quot
-                       ,(,gen-fun denom num min-x max-x))
-                      (rem (- x (* quot ,y))))
-                 (values quot rem)))))))
+              `(if ,,(if ceiling-p ''(zerop x) ''nil)
+                   ;; X = 0 has to be handled separately
+                   ;; in ceiling.
+                   (values 0 0)
+                   (let* ((quot
+                           (+ ,,(if ceiling-p 1 0)
+                              ,(,gen-fun denom num min-x max-x)))
+                          (rem (- x (* quot ,y))))
+                     (values quot rem))))))))
   ;; Unsigned floor is already covered in unsigned truncate.
   (def t nil)
   (def nil t)

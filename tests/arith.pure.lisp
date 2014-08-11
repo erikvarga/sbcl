@@ -474,9 +474,9 @@
                          ;; Cases where multiply-add is used
                          19 173 797 235425 235427
                          ;; Some special cases for division by rationals
-                         2/3 7/3 24/7 768/251 3217484136/43730657
+                         2/3 7/3 24/7 768/251 5013/10 3217484136/43730657
                          ;; Negative ratios
-                         -2/3 -7/3 -24/7 -768/251
+                         -2/3 -7/3 -24/7 -768/251 -5013/10
                          ;; Range extremes
                          3
                          ,most-positive-fixnum
