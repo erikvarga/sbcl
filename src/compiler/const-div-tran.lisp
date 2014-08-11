@@ -740,28 +740,21 @@
                  (precision (integer-length
                              (1- (max (abs min-x)
                                       (abs max-x)))))
-                 (x-comp-expr '(plusp x))
                  (neg-m) (pos-m) (neg-shift) (pos-shift))
             (multiple-value-setq (neg-m neg-shift)
               (funcall choose-multiplier-fun a y precision -1))
             (multiple-value-setq (pos-m pos-shift)
               (funcall choose-multiplier-fun a y precision 1))
-            (when (and (>= min-x 0) (>= max-x 0))
-              (setq neg-m pos-m
-                    neg-shift pos-shift
-                    x-comp-expr t))
-            (when (and (<= min-x 0) (<= max-x 0))
-              (setq pos-m neg-m
-                    pos-shift neg-shift
-                    x-comp-expr nil))
-            `(truly-the (integer ,min-res ,max-res)
-                        (if ,x-comp-expr
-                            ,(gen-core-expr
-                              div-fun a y pos-m pos-shift 0 max-x signed-p
-                              choose-multiplier-fun precision)
-                            ,(gen-core-expr
-                              div-fun a y neg-m neg-shift min-x 0 signed-p
-                              choose-multiplier-fun precision)))))))
+            (let ((neg-expr (gen-core-expr
+                             div-fun a y neg-m neg-shift min-x 0 signed-p
+                             choose-multiplier-fun precision))
+                  (pos-expr (gen-core-expr
+                             div-fun a y pos-m pos-shift 0 max-x signed-p
+                             choose-multiplier-fun precision)))
+              `(truly-the (integer ,min-res ,max-res)
+                  ,(cond ((<= max-x 0) neg-expr)
+                         ((>= min-x 0) pos-expr)
+                         (t `(if (plusp x) ,pos-expr ,neg-expr)))))))))
      (gen-ceiling (a y min-x max-x)
        (aver (plusp y))
        (let ((min (1- (ceiling (* a min-x) y)))
@@ -838,25 +831,15 @@
     (assert (equal
              (gen 7 ceiling unsigned)
              '(truly-the (integer 0 613566756)
-               (if t
-                   ;; The unnecessary condition checking is
-                   ;; removed at compile-time
-                   (%multiply-high-and-shift x 1227133513 1)
-                   (ash (* x 1227133513) -33)))))
+               (%multiply-high-and-shift x 1227133513 1))))
     (assert (equal
              (gen 11 ceiling unsigned)
              '(truly-the (integer 0 390451572)
-               (if t
-                   (let ((t1 (%multiply-high x 1952257861)))
-                     (ash
-                      (truly-the word
-                                 (+ t1 (ash (truly-the word (- x t1)) -1)))
-                      -3))
-                   (let ((t1 (%multiply-high x 1952257861)))
-                     (ash
-                      (truly-the word
-                                 (+ t1 (ash (truly-the word (- x t1)) -1)))
-                      -3))))))
+               (let ((t1 (%multiply-high x 1952257861)))
+                 (ash
+                  (truly-the word
+                     (+ t1 (ash (truly-the word (- x t1)) -1)))
+                  -3)))))
     ;; signed ceiling:
     (assert (equal
              (gen 5 ceiling signed)
@@ -877,23 +860,15 @@
     (assert (equal
              (gen 11 floor unsigned)
              '(truly-the (integer 0 390451572)
-               (if t
-                   (%multiply-high-and-shift x 3123612579 3)
-                   (ash (* x 3123612579) -35)))))
+               (%multiply-high-and-shift x 3123612579 3))))
     (assert (equal
              (gen 7 floor unsigned)
              '(truly-the (integer 0 613566756)
-               (if t
-                   (let ((t1 (%multiply-high x 613566757)))
-                     (ash
-                      (truly-the word
-                        (+ t1 (ash (truly-the word (- x t1)) -1)))
-                      -2))
-                   (let ((t1 (%multiply-high x 613566757)))
-                     (ash
-                      (truly-the word
-                        (+ t1 (ash (truly-the word (- x t1)) -1)))
-                      -2))))))
+               (let ((t1 (%multiply-high x 613566757)))
+                 (ash
+                  (truly-the word
+                     (+ t1 (ash (truly-the word (- x t1)) -1)))
+                  -2)))))
     ;; signed floor:
     (assert (equal
              (gen 5 floor signed)
