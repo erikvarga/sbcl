@@ -649,7 +649,7 @@
 ;;; The arguments can be either signed or unsigned words.
 ;;; In most cases, the expression (CEILING X A/Y) is converted into and
 ;;; expression of the form (1+ (ASH (* X M) S)), and (FLOOR X A/Y) is
-;;; converted into (ASH (* X M) S), where Y M and S are constants. 
+;;; converted into (ASH (* X M) S), where Y M and S are constants.
 ;;; For signed words, the multiplier must be slightly changed when X is
 ;;; negative to produce the correct value, so a different multiplier is
 ;;; used depending on the sign of X.
@@ -819,9 +819,9 @@
 ;;; function for both signed and unsigned words, under a word size of 32 bits:
 #+sb-xc-host
 (when (= sb!vm:n-word-bits 32)
-  
+
   ;; Examples for integer division:
-  
+
   (macrolet ((gen (y div-type sign-type)
                `(,(if (eq div-type 'ceiling)
                       'gen-ceilinged-mul-by-frac-expr
@@ -890,9 +890,9 @@
                     (truly-the sb!vm:signed-word
                        (+ (%signed-multiply-high x -1651910499) x))
                     -3))))))
-  
+
   ;; Examples for multiply-divide:
-  
+
   (macrolet ((gen (a y div-type sign-type)
                `(,(if (eq div-type 'ceiling)
                       'gen-ceilinged-mul-by-frac-expr
@@ -1283,3 +1283,23 @@
   ;; Unsigned floor is already covered
   ;; in unsigned truncate.
   (def t nil)) ; Unsigned ceiling
+
+;;; Convert division by 1/Y to multiplication.
+;;; The preceding transforms would handle this case too,
+;;; but they calculate the remainder less efficiently.
+(macrolet
+    ((def (div-fun)
+       `(deftransform ,div-fun
+            ((x y) (integer (constant-arg ratio))
+             *
+             :policy (and (> speed compilation-speed)
+                          (> speed space)))
+          "convert integer - rational division to multiplication"
+          (let* ((y      (lvar-value y))
+                 (num (abs (numerator y)))
+                 (denom (* (signum y) (abs (denominator y)))))
+            (when (/= num 1) (give-up-ir1-transform))
+            `(values (* x ,denom) 0)))))
+  (def truncate)
+  (def floor)
+  (def ceiling))
