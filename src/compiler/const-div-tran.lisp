@@ -229,10 +229,11 @@
 ;;; and right-shifting by SHIFT as efficiently as possible.
 ;;; When no efficient code sequence is found, return NIL.
 ;;; Used in most the div-by-mul code generators.
-(defun gen-multiply-shift-expr (m shift min-x max-x signed-p)
+(defun gen-multiply-shift-expr (m shift min-x max-x)
   (multiple-value-bind (scaled-m scaled-shift)
       (get-scaled-multiplier m shift)
-    (let* ((scaled-m-bits (integer-length scaled-m))
+    (let* ((signed-p (or (minusp min-x) (minusp m)))
+           (scaled-m-bits (integer-length scaled-m))
            (n (- sb!vm:n-word-bits (if signed-p 1 0)))
            (max-num (expt 2 n))
            (mulhi-fun (if signed-p
@@ -440,7 +441,7 @@
                  (min (1- (truncate min-x (abs y)))))
              `(truly-the (integer ,min ,max)
                          ,(gen-multiply-shift-expr
-                           m shift min-x max-x t))))))
+                           m shift min-x max-x))))))
     (setq expr
           `(- ,expr (ash x ,(- sb!vm:n-word-bits))))
     (when (minusp y)
@@ -510,7 +511,7 @@
                   shift (1- (integer-length scale))
                   y scale))))
       (let ((expr
-             (gen-multiply-shift-expr m shift 0 max-x nil)))
+             (gen-multiply-shift-expr m shift 0 max-x)))
         (unless expr
           (setq expr
                 (if (> a y)
@@ -577,7 +578,7 @@
                  (t ,(signum a))))))
     (let ((max-product (truncate (* max-x a) y))
           (min-product (truncate (* min-x a) y))
-          (expr (gen-multiply-shift-expr m shift min-x max-x t)))
+          (expr (gen-multiply-shift-expr m shift min-x max-x)))
       (when (minusp a) (rotatef min-product max-product))
       (unless expr
         (if (> (abs a) y)
@@ -657,7 +658,7 @@
 ;;; To get the correct quotient, the 1+ has to be added after calling the
 ;;; function.
 (labels
-    ((gen-core-expr (div-fun a y m shift min-x max-x signed-p
+    ((gen-core-expr (div-fun a y m shift min-x max-x
                      choose-multiplier-fun precision)
        (let ((divisor 1)
              (gen-fun (if (eq div-fun 'ceiling)
@@ -681,7 +682,7 @@
                          (signum max-x))))
            (setq m-bits (integer-length m)))
          (let ((expr
-                (gen-multiply-shift-expr m shift min-x max-x signed-p)))
+                (gen-multiply-shift-expr m shift min-x max-x)))
            (unless expr
              (if (> (abs a) y)
                  ;; If no multiply-shift code is available,
@@ -738,7 +739,6 @@
                   (if (eq div-fun 'ceiling)
                       'choose-ceiling-multiplier
                       'choose-floor-multiplier))
-                 (signed-p (or (minusp min-x) (minusp a)))
                  (precision (integer-length
                              (1- (max (abs min-x)
                                       (abs max-x)))))
@@ -748,10 +748,10 @@
             (multiple-value-setq (pos-m pos-shift)
               (funcall choose-multiplier-fun a y precision 1))
             (let ((neg-expr (gen-core-expr
-                             div-fun a y neg-m neg-shift min-x 0 signed-p
+                             div-fun a y neg-m neg-shift min-x 0
                              choose-multiplier-fun precision))
                   (pos-expr (gen-core-expr
-                             div-fun a y pos-m pos-shift 0 max-x signed-p
+                             div-fun a y pos-m pos-shift 0 max-x
                              choose-multiplier-fun precision)))
               `(truly-the (integer ,min-res ,max-res)
                   ,(cond ((<= max-x 0) neg-expr)
@@ -850,13 +850,13 @@
              (gen 5 ceiling signed)
              '(truly-the (integer -429496730 429496729)
                (if (plusp x)
-                   (%signed-multiply-high-and-shift x 858993459 0)
+                   (%multiply-high-and-shift x 858993459 0)
                    (%signed-multiply-high-and-shift x 1717986919 1)))))
     (assert (equal
              (gen 7 ceiling signed)
              '(truly-the (integer -306783379 306783378)
                (if (plusp x)
-                   (%signed-multiply-high-and-shift x 1227133513 1)
+                   (%multiply-high-and-shift x 1227133513 1)
                    (ash
                     (truly-the sb!vm:signed-word
                       (+ (%signed-multiply-high x -1840700269) x))
@@ -879,17 +879,17 @@
              (gen 5 floor signed)
              '(truly-the (integer -429496730 429496729)
                (if (plusp x)
-                   (%signed-multiply-high-and-shift x 1717986919 1)
+                   (%multiply-high-and-shift x 1717986919 1)
                    (%signed-multiply-high-and-shift x 858993459 0)))))
     (assert (equal
-             (gen 7 floor signed)
-             '(truly-the (integer -306783379 306783378)
+             (gen 13 floor signed)
+             '(truly-the (integer -165191050 165191049)
                (if (plusp x)
+                   (%multiply-high-and-shift x 1321528399 2)
                    (ash
                     (truly-the sb!vm:signed-word
-                      (+ (%signed-multiply-high x -1840700269) x))
-                    -2)
-                   (%signed-multiply-high-and-shift x 1227133513 1))))))
+                       (+ (%signed-multiply-high x -1651910499) x))
+                    -3))))))
   
   ;; Examples for multiply-divide:
   
@@ -924,13 +924,10 @@
              (gen 2 3 ceiling signed)
              '(truly-the (integer -1431655766 1431655764)
                (if (plusp x)
+                   (%multiply-high-and-shift x 2863311530 0)
                    (ash
                     (truly-the sb!vm:signed-word
-                               (+ (%signed-multiply-high x -1431655766) x))
-                    0)
-                   (ash
-                    (truly-the sb!vm:signed-word
-                               (+ (%signed-multiply-high x -1431655765) x))
+                       (+ (%signed-multiply-high x -1431655765) x))
                     0)))))
     (assert (equal
              (gen -243 100 ceiling signed)
