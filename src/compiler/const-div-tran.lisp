@@ -1283,3 +1283,23 @@
   ;; Unsigned floor is already covered
   ;; in unsigned truncate.
   (def t nil)) ; Unsigned ceiling
+
+;;; Convert division by 1/Y to multiplication.
+;;; The preceding transforms would handle this case too,
+;;; but they calculate the remainder less efficiently.
+(macrolet
+    ((def (div-fun)
+       `(deftransform ,div-fun
+            ((x y) (integer (constant-arg ratio))
+             *
+             :policy (and (> speed compilation-speed)
+                          (> speed space)))
+          "convert integer - rational division to multiplication"
+          (let* ((y      (lvar-value y))
+                 (num (abs (numerator y)))
+                 (denom (* (signum y) (abs (denominator y)))))
+            (when (/= num 1) (give-up-ir1-transform))
+            `(values (* x ,denom) 0)))))
+  (def truncate)
+  (def floor)
+  (def ceiling))
