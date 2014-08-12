@@ -643,13 +643,12 @@
                        (ash (* x 15270994831) -34))
                       (ash x -32)))))))
 
-;;; Return an expression for calculating the quotient like in the previous
-;;; function, but the quotient is rounded towards positive or negative infinity.
+;;; Return an expression for calculating the product like in the previous
+;;; function, but the result is rounded towards positive or negative infinity.
 ;;; The arguments can be either signed or unsigned words.
-;;; The expression (CEILING X Y) is converted into and expression of the
-;;; form (1+ (ASH (* X M) S)), and (FLOOR X Y) is converted into (ASH (* X M) S),
-;;; where Y M and S are constants. Like in the previous functions,
-;;; %MULTIPLY-HIGH is used when the intermediate values don't fit in a word.
+;;; In most cases, the expression (CEILING X A/Y) is converted into and
+;;; expression of the form (1+ (ASH (* X M) S)), and (FLOOR X A/Y) is
+;;; converted into (ASH (* X M) S), where Y M and S are constants. 
 ;;; For signed words, the multiplier must be slightly changed when X is
 ;;; negative to produce the correct value, so a different multiplier is
 ;;; used depending on the sign of X.
@@ -657,9 +656,6 @@
 ;;; intermediate value can be used to calculate the remainder efficiently.
 ;;; To get the correct quotient, the 1+ has to be added after calling the
 ;;; function.
-;;; It is possible that the function has to use an N+1 bit multiplier that
-;;; doesn't fit in a word. This is handled similarly as in the truncate code
-;;; generator.
 (labels
     ((gen-core-expr (div-fun a y m shift min-x max-x signed-p
                      choose-multiplier-fun precision)
@@ -716,18 +712,24 @@
                      ,(funcall gen-fun
                                (signum divisor) (abs divisor)
                                min-x max-x)))))))
+     ;; The generic code generator used by both floor and
+     ;; ceiling. DIV-FUN specifies what kind of division
+     ;; it is replacing.
      (gen (div-fun a y min-x max-x min-res max-res)
        (declare (type (or sb!vm:signed-word word) a y min-x max-x))
        (aver (<= min-x max-x))
        (cond
-         ((= 1 y) `(- (* x ,a) ,(if (eq div-fun 'ceiling) 1 0)))
+         ((= 1 y)
+          ;; The operation is actually just a multiplication
+          ;; in this case. Since the function must return one less
+          ;; than the actual result of the ceilinged division, we
+          ;; subtract one from the result in case of ceiling.
+          `(- (* x ,a),(if (eq div-fun 'ceiling) 1 0)))
          ((and (= (abs a) 1) (zerop (logand y (1- y))))
           ;; When the multiplicand is of the form 1/2^P, generate
           ;; a floored or ceilinged division by 2^P. This gets
           ;; transformed into faster operations later on.
-          ;; Since the function must return one less than the
-          ;; actual result of the ceilinged division, we subtract
-          ;; one from the result in case of ceiling.
+          ;; We subtract one in case of ceiling like before.
           `(truly-the (integer ,min-res ,max-res)
               (- (,div-fun x ,(* (signum a) y))
                  ,(if (eq div-fun 'ceiling) 1 0))))
@@ -817,6 +819,9 @@
 ;;; function for both signed and unsigned words, under a word size of 32 bits:
 #+sb-xc-host
 (when (= sb!vm:n-word-bits 32)
+  
+  ;; Examples for integer division:
+  
   (macrolet ((gen (y div-type sign-type)
                `(,(if (eq div-type 'ceiling)
                       'gen-ceilinged-mul-by-frac-expr
@@ -884,7 +889,117 @@
                     (truly-the sb!vm:signed-word
                       (+ (%signed-multiply-high x -1840700269) x))
                     -2)
-                   (%signed-multiply-high-and-shift x 1227133513 1)))))))
+                   (%signed-multiply-high-and-shift x 1227133513 1))))))
+  
+  ;; Examples for multiply-divide:
+  
+  (macrolet ((gen (a y div-type sign-type)
+               `(,(if (eq div-type 'ceiling)
+                      'gen-ceilinged-mul-by-frac-expr
+                      'gen-floored-mul-by-frac-expr)
+                  ,a ,y
+                  ,@(if (eq sign-type 'unsigned)
+                        `(0 ,(1- (expt 2 sb!vm:n-word-bits)))
+                        `(,(- (expt 2 (1- sb!vm:n-word-bits)))
+                           ,(1- (expt 2 (1- sb!vm:n-word-bits))))))))
+    ;; unsigned ceiling:
+    (assert (equal
+             (gen 2 3 ceiling unsigned)
+             '(truly-the (integer 0 2863311529)
+               (let ((t1 (%multiply-high x 1431655765)))
+                 (ash (truly-the word (+ t1 (ash (truly-the word (- x t1)) -1)))
+                      0)))))
+    (assert (equal
+             (gen 243 100 ceiling unsigned)
+             '(truly-the (integer 0 10436770526)
+               (+ (* x 2)
+                (truly-the (integer 0 1846835936)
+                 (let ((x (ash x 0)))
+                   (values
+                    (%multiply-and-add
+                     x 1846835937
+                     (%multiply-high x 1174405120)))))))))
+    ;; signed ceiling:
+    (assert (equal
+             (gen 2 3 ceiling signed)
+             '(truly-the (integer -1431655766 1431655764)
+               (if (plusp x)
+                   (ash
+                    (truly-the sb!vm:signed-word
+                               (+ (%signed-multiply-high x -1431655766) x))
+                    0)
+                   (ash
+                    (truly-the sb!vm:signed-word
+                               (+ (%signed-multiply-high x -1431655765) x))
+                    0)))))
+    (assert (equal
+             (gen -243 100 ceiling signed)
+             '(truly-the (integer -5218385263 5218385264)
+               (if (plusp x)
+                   (+ (* x -2)
+                      (truly-the (integer -923417969 -1)
+                         (let ((x (ash x 0)))
+                           (values
+                            (%signed-multiply-and-add-high
+                             x -1846835937
+                             (%signed-multiply-high x -1207959552))))))
+                   (+ (* x -2)
+                      (truly-the (integer -1 923417968)
+                         (let ((x (ash x 0)))
+                           (values
+                            (%signed-multiply-and-add-high
+                             x -1846835937
+                             (%signed-multiply-high x -1140850688))))))))))
+    ;; unsigned floor:
+    (assert (equal
+             (gen 3 7 floor unsigned)
+             '(truly-the (integer 0 1840700269)
+               (let ((t1 (%multiply-high x 3067833783)))
+                 (ash (truly-the word (+ t1 (ash (truly-the word (- x t1)) -1)))
+                      -1)))))
+    (assert (equal
+             (gen 53 48 floor unsigned)
+             '(truly-the (integer 0 4742359721)
+               (+ (* x 1)
+                (truly-the (integer 0 447392426)
+                 (let ((x (truly-the (integer 0 1342177279)
+                             (+ 0
+                                (%multiply-high-and-shift
+                                 x 1342177280 0)))))
+                   (truly-the (integer 0 447392426)
+                      (%multiply-high-and-shift x 2863311531 1))))))))
+    ;; signed floor:
+    (assert (equal
+             (gen -3 7 floor signed)
+             '(truly-the (integer -920350135 920350134)
+               (if (plusp x)
+                   (ash
+                    (truly-the sb!vm:signed-word
+                       (- (%signed-multiply-high x 613566757) x))
+                    -1)
+                   (ash (* x -7362801079) -34)))))
+    (assert (equal
+             (gen 53 48 floor signed)
+             '(truly-the (integer -2371179862 2371179860)
+               (if (plusp x)
+                   (+ (* x 1)
+                      (truly-the (integer 0 223696213)
+                         (let ((t1 (%multiply-high x 2863311531)))
+                           (ash
+                            (truly-the word
+                               (+ t1 (ash (truly-the word (- x t1))
+                                          -1)))
+                            -3))))
+                   (+ (* x 1)
+                      (truly-the (integer -223696214 0)
+                         (let ((x
+                                (truly-the (integer -671088640 0)
+                                   (+ 0
+                                      (%signed-multiply-high-and-shift
+                                       x 1342177280 0)))))
+                           (truly-the (integer -223696214 0)
+                              (%signed-multiply-high-and-shift
+                               x 1431655765 0)))))))))))
 
 ;;; If the divisor is constant and both args are positive and fit in a
 ;;; machine word, replace the division by a multiplication and possibly
@@ -1095,6 +1210,7 @@
     `(let* ((quot ,(gen-unsigned-mul-by-frac-expr denom num max-x))
             (rem (- x (* quot ,y))))
        (values quot rem))))
+
 ;;; Similar to previous truncate transform, but with signed args.
 (deftransform truncate ((x y) (sb!vm:signed-word (constant-arg ratio))
                         *
@@ -1121,6 +1237,8 @@
        (values quot rem))))
 
 ;; Ceilinged/floored division by rationals.
+;; The signed and unsigned versions are similar,
+;; so they are all done with a single macro.
 (macrolet
     ((def (ceiling-p signed-p)
        (let ((word-type (if signed-p
@@ -1163,7 +1281,8 @@
                               ,(,gen-fun denom num min-x max-x)))
                           (rem (- x (* quot ,y))))
                      (values quot rem))))))))
-  ;; Unsigned floor is already covered in unsigned truncate.
-  (def t nil)
-  (def nil t)
-  (def t t))
+  (def nil t)  ; Signed floor
+  (def t t)    ; Signed ceiling
+  ;; Unsigned floor is already covered
+  ;; in unsigned truncate.
+  (def t nil)) ; Unsigned ceiling
