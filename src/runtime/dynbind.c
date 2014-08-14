@@ -1,6 +1,6 @@
 /*
  * support for dynamic binding from C
- * See the "Chapter 9: Specials" of the SBCL Internals Manual.
+ * See the "Chapter 10 Specials" of the SBCL Internals Manual.
  */
 
 /*

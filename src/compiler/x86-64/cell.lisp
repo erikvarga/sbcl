@@ -370,7 +370,7 @@
 ;;; BIND -- Establish VAL as a binding for SYMBOL. Save the old value and
 ;;; the symbol on the binding stack and stuff the new value into the
 ;;; symbol.
-;;; See the "Chapter 9: Specials" of the SBCL Internals Manual.
+;;; See the "Chapter 10: Specials" of the SBCL Internals Manual.
 
 #!+sb-thread
 (progn
