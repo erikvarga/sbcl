@@ -1,0 +1,42 @@
+@node Division using Multiplication
+@comment  node-name,  next,  previous,  up
+@chapter Division using Multiplication
+
+@menu
+* Quotient calculation::
+* Remainder calculation::
+@end menu
+
+The SBCL compiler replaces integer division by constants known at
+compile-time with a sequence of faster operations, like multiplication,
+addition and shifting. This optimisation is used in the @code{truncate},
+@code{floor} and @code{ceiling} functions, and also propagates to
+@code{mod} and @code{rem}. The dividend has to be an integer that fits
+into an unsigned or signed machine word, while the divisor can also be
+a rational number.
+
+@node Quotient calculation
+@section Quotient calculation
+
+In most cases, the quotient is calculated by multiplying and then
+shifting the dividend by suitable values. The compiler transforms
+the multiply-shift into a sequence of other operations such as
+@code{SB-KERNEL:%MULTIPLY-HIGH} and @code{SB-BIGNUM:%MULTIPLY-AND-ADD}
+when the multiplier is too large or if the intermediate values might
+overflow. When the range of possible dividends is smaller, the chosen
+multiplier will also be smaller and the multiply-shift can be performed
+with fewer operations.
+
+
+@node Remainder calculation
+@section Remainder calculation
+
+For truncated divison by integers, the remainder can be calculated with
+a multiplication and subtraction, so it doesn't add much overhead. In
+@code{floor} and @code{ceiling}, the remainder calculation is a little
+more complicated because the result of the multiplication could overflow.
+
+When the divisor is a rational, calculation of the remainder is much
+slower because it involves a division even if we know the quotient.
+Because of that, this optimisation only gives a speed boost for division
+by rationals when the remainder isn't needed.
