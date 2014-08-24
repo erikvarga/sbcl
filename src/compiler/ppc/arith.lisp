@@ -1319,6 +1319,29 @@
     (inst lr mask fixnum-tag-mask)
     (inst andc result temp mask)))
 
+#!+multiply-high-vops
+(define-vop (smul-add-hi)
+  (:translate %signed-multiply-and-add-high)
+  (:policy :fast-safe)
+  (:args (x :scs (signed-reg))
+         (y :scs (signed-reg))
+         (b :scs (signed-reg) :to (:eval 1)))
+  (:arg-types signed-num signed-num signed-num)
+  (:temporary (:scs (signed-reg) :to (:result 0) :target hi) hi-temp)
+  (:temporary (:scs (signed-reg) :from (:eval 0) :to (:result 1)) lo-temp)
+  (:results (hi :scs (signed-reg)))
+  (:result-types signed-num)
+  (:generator 40
+    (inst mulhw hi-temp x y)
+    (inst mullw lo-temp x y)
+    (inst addc lo-temp lo-temp b)
+    (inst addze hi hi-temp)
+    (inst cmpwi b 0)
+    (let ((positive (gen-label)))
+      (inst bge positive)
+      (inst subi hi hi 1)
+      (emit-label positive))))
+
 (define-vop (bignum-lognot lognot-mod32/unsigned=>unsigned)
   (:translate sb!bignum:%lognot))
 

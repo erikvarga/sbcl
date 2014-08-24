@@ -473,7 +473,9 @@
                          ;; Cases where multiply-add is used
                          19 173 797 235425 235427
                          ;; Some special cases for division by rationals
-                         7/3 24/7 768/251 171047/3217058415 1653067/4203371246
+                         7/3 24/7 768/251 3217484136/43730657
+                         ;; Negative ratios
+                         -7/3 -24/7 -768/251
                          ;; Range extremes
                          3
                          ,most-positive-fixnum
@@ -484,10 +486,15 @@
                          ,(- 1 (expt 2 (1- sb-vm:n-word-bits)))
                          2/3
                          ,(/ 3 most-positive-fixnum)
+                         ,(/ most-negative-fixnum 3)
                          ,(/ (1- (expt 2 sb-vm:n-word-bits))
                              (- (expt 2 sb-vm:n-word-bits) 2))
+                         ,(/ (1- (expt 2 (1- sb-vm:n-word-bits)))
+                             (- (expt 2 (1- sb-vm:n-word-bits))))
                          ,(/ (1- (expt 2 sb-vm:n-word-bits))
                              7)
+                         ,(/ (- (expt 2 (1- sb-vm:n-word-bits)))
+                             3)
                          ;; Some random values
                          ,@(loop for i from 8 to sb-vm:n-word-bits
                                  for r = (- (random (expt 2 (1+ i)))
@@ -499,12 +506,13 @@
                                  ;; Divide by a random integer to get
                                  ;; a rational divisor.
                                  when (not (zerop r))
-                                 collect (/ (abs r)
-                                            (max 1
-                                             (random
-                                              (expt 2
-                                                  (1+ (random
-                                                       sb-vm:n-word-bits)))))))))
+                                 collect (/ r (max 1
+                                                   (random
+                                                    (expt 2
+                                                     (1+ (random
+                                                          (- sb-vm:n-word-bits
+                                                             (if (plusp r)
+                                                                 0 1)))))))))))
         (dolist (fun '(truncate ceiling floor mod rem))
           (let ((foo (compile nil `(lambda (x)
                                      (declare (optimize (speed 3)
@@ -531,10 +539,12 @@
                                         collect (- r))))
               (when (typep dividend dividend-type)
                 ;; Do the test only if we're dividing uword/uword,
-                ;; sword/sword or uword/rational.
-                (dolist (arg-type `((or ratio (unsigned-byte ,sb-vm:n-word-bits))
+                ;; sword/sword or anything/ratio.
+                (dolist (arg-type `((unsigned-byte ,sb-vm:n-word-bits)
                                     (signed-byte ,sb-vm:n-word-bits)))
-                  (when (and (typep dividend arg-type) (typep divisor arg-type))
+                  (when (and (typep dividend arg-type)
+                             (or (typep divisor arg-type)
+                                 (typep divisor 'ratio)))
                     (multiple-value-bind (q1 r1)
                         (funcall foo dividend)
                       (multiple-value-bind (q2 r2)

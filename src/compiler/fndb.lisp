@@ -349,6 +349,11 @@
     sb!vm:signed-word
     (movable foldable flushable))
 
+(defknown sb!kernel::%signed-multiply-and-add-high
+    (sb!vm:signed-word sb!vm:signed-word sb!vm:signed-word)
+    sb!vm:signed-word
+    (movable foldable flushable))
+
 (defknown (mod rem) (real real) real
   (movable foldable flushable explicit-check))
 

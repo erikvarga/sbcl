@@ -1042,6 +1042,20 @@
           (t
            (inst mov result 0)))))
 
+#!+multiply-high-vops
+(define-vop (smul-add-hi)
+  (:translate %signed-multiply-and-add-high)
+  (:policy :fast-safe)
+  (:args (x :scs (signed-reg) :to :result)
+         (y :scs (signed-reg) :to :result)
+         (b :scs (signed-reg) :to :result))
+  (:arg-types signed-num signed-num signed-num)
+  (:results (result :scs (signed-reg) :from :eval))
+  (:result-types signed-num)
+  (:generator 2
+    (inst mov result 0)
+    (inst smlal result b x y)))
+
 (define-vop (bignum-lognot lognot-mod32/unsigned=>unsigned)
   (:translate sb!bignum:%lognot))
 
