@@ -257,6 +257,12 @@
       (multiple-value-bind (m shift2)
           (choose-multiplier 1 y max-x)
         (cond
+          ((> y (truncate max-x 3))
+           ;; When Y is large enough, it's faster to
+           ;; determine the quotient with comparisons.
+            `(cond ((< x ,y) 0)
+                   ((< x ,(* y 2)) 1)
+                   (t 2)))
           ((< (* max-x m) n)
            `(ash (* x ,m) ,(- shift2)))
           (t
