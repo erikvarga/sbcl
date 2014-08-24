@@ -157,12 +157,13 @@
 ;;;; converting division to multiplication, addition, shift, etc.
 
 ;;; Get the multipy and shift value that can be used instead of
-;;; dividing by y. Used in gen-(un)signed-div-by-constant-expr.
-(defun choose-multiplier (y max-x)
+;;; multiplying by a/y. Used in gen-(un)signed-div-by-constant-expr
+;;; and gen-unsigned-mul-by-frac-expr.
+(defun choose-multiplier (a y max-x)
   (let* ((max-shift (+ (integer-length max-x) (integer-length y)))
-         (scale (ash 1 max-shift))
+         (scale (ash a max-shift))
          (low (floor scale y))
-         (k (1- (ceiling scale max-x)))
+         (k (1- (ceiling (ash 1 max-shift) max-x)))
          (high (floor (+ scale k) y))
          (diff (logxor low high))
          (delta (1- (integer-length diff))))
@@ -254,7 +255,7 @@
     (let ((n (expt 2 sb!vm:n-word-bits))
           (shift1 0))
       (multiple-value-bind (m shift2)
-          (choose-multiplier y max-x)
+          (choose-multiplier 1 y max-x)
         (cond
           ((< (* max-x m) n)
            `(ash (* x ,m) ,(- shift2)))
@@ -265,8 +266,8 @@
              (setq shift1 (ld (logand y (- y))))
              (multiple-value-setq (m shift2)
                (multiple-value-call 'get-scaled-multiplier
-                 (choose-multiplier (/ y (ash 1 shift1))
-                                           (ash max-x (- shift1))))))
+                 (choose-multiplier 1 (/ y (ash 1 shift1))
+                                    (ash max-x (- shift1))))))
            (if (>= m n)
                (if (< max-x (1- n))
                    (let* ((shift
@@ -319,10 +320,21 @@
            (type sb!vm:signed-word min-x max-x))
   (aver (not (zerop (logand (abs y) (1- (abs y))))))
   (aver (<= min-x max-x))
+  (when (> (abs y) (ash (max (abs max-x) (abs min-x)) -1))
+    ;; When Y is large enough, it's faster to
+    ;; determine the quotient with comparisons.
+    (return-from gen-signed-div-by-constant-expr
+      (if (plusp y)
+          `(cond ((<= x ,(- y)) -1)
+                 ((< x ,y) 0)
+                 (t 1))
+          `(cond ((<= x ,y) 1)
+                 ((< x ,(- y)) 0)
+                 (t -1)))))
   (let* ((n (expt 2 (1- sb!vm:n-word-bits)))
          (expr
           (multiple-value-bind (m shift)
-              (choose-multiplier (abs y) (max (abs max-x) (abs min-x)))
+              (choose-multiplier 1 (abs y) (max (abs max-x) (abs min-x)))
             (cond
               ((and (< (* max-x m) n) (>= (* min-x m) (- n)))
                `(ash (* num ,m) ,(- shift)))
@@ -383,6 +395,122 @@
                            (+ num (%signed-multiply-high num -1840700269)))
                 -2)
                (ash num -32)))))))
+
+;;; Return an expression to calculate truncated multiplication of an
+;;; integer by constant rational A/Y, using multiplication, shift and
+;;; add/sub instead of division. The integer and the numerator/denominator
+;;; of the rational arg must be positive and fit in a machine word.
+(defun gen-unsigned-mul-by-frac-expr (a y max-x)
+  (declare (type word a y max-x))
+  (multiple-value-bind (m shift)
+      (choose-multiplier a y max-x)
+    (let ((s (expt 2 shift)))
+      (when (> s (truncate (* m max-x) 3))
+        ;; When the shift value is large enough, it's faster
+        ;; to determine the quotient with comparisons.
+        (return-from gen-unsigned-mul-by-frac-expr
+          `(cond ((< x ,(ceiling s m)) 0)
+                 ((< x ,(ceiling (* s 2) m)) 1)
+                 (t 2)))))
+    (let ((divisor 1)
+          (m-bits (integer-length m)))
+      (when (and (> (integer-length m) (1+ sb!vm:n-word-bits)) (evenp y))
+        (let ((scale (logand y (- y))))
+          (when (< a scale)
+            ;; When the Y is a multiple of 2^P, generate
+            ;; a multiplication by A/2^P and a truncated
+            ;; division by Y/2^P (The truncate is added
+            ;; at the end).
+            (setq divisor (/ y scale)
+                  m a
+                  m-bits (integer-length m)
+                  shift (1- (integer-length scale))
+                  y scale))))
+      (let* ((n (expt 2 sb!vm:n-word-bits))
+             (expr
+              (cond ((and (= m-bits (1+ sb!vm:n-word-bits))
+                          (> shift sb!vm:n-word-bits))
+                     ;; Perform N+1-bit multiply-shift when
+                     ;; the multiplier and shift value is
+                     ;; large enough.
+                     (setq shift (- shift sb!vm:n-word-bits))
+                     (flet ((word (x)
+                              `(truly-the word ,x)))
+                       `(let* ((num x)
+                               (t1 (%multiply-high num ,(- m n))))
+                          (ash ,(word `(+ t1 (ash ,(word `(- num t1))
+                                                  -1)))
+                               ,(- 1 shift)))))
+                    ;; If everything fits in a word, we can
+                    ;; do the multiplication and shift directly.
+                    ((and (<= m-bits sb!vm:n-word-bits) (< (* max-x m) n))
+                     `(ash (* x ,m) ,(- shift)))
+                    ((> (+ m-bits
+                           (max 0 (- sb!vm:n-word-bits shift)))
+                        sb!vm:n-word-bits)
+                     ;; If the multiplier used for multiply-high is too
+                     ;; large, try to generate a 2N-bit multiply-shift.
+                     (let ((shift-rem (- (* 2 sb!vm:n-word-bits) shift)))
+                       (cond ((<= (+ shift-rem (integer-length max-x))
+                                  sb!vm:n-word-bits)
+                              (let ((m-high (ash m (- sb!vm:n-word-bits)))
+                                    (m-low (ldb (byte sb!vm:n-word-bits 0) m)))
+                                `(let ((x (ash x ,shift-rem)))
+                                   (values (%multiply-and-add
+                                            x ,m-high
+                                            (%multiply-high x ,m-low))))))
+                             ((> a y)
+                              ;; If that's not possible, and A/Y > 1,
+                              ;; multiply with its integer part and
+                              ;; the remainder separately.
+                              (let ((q (truncate a y)))
+                                `(+ (* x ,q)
+                                    ,(gen-unsigned-mul-by-frac-expr
+                                      (- a (* y q))
+                                      y max-x))))
+                             ;; Otherwise, perform generic
+                             ;; multiplication and shift.
+                             (t
+                              `(ash (* x ,m) ,(- shift))))))
+                    (t
+                     ;; Since the scaled multiplier fits into
+                     ;; a word, we can use multiply-high.
+                     (multiple-value-setq (m shift)
+                       (get-scaled-multiplier m shift))
+                     `(%multiply-high-and-shift x ,m ,shift)))))
+        `(values (truncate (truly-the (integer 0 ,(truncate (* max-x a) y))
+                                      ,expr)
+                           ,divisor))))))
+
+;;; The following two asserts show some of the average cases and the worst case
+;;; with respect to the complexity of the generated expression of the previous,
+;;; function, under a word size of 32 bits. The TRUNCATE is further optimized
+;;; during compilation (transformed into multiply-shift or, in case of
+;;; (TRUNCATE ... 1), removed altogether).
+#+sb-xc-host
+(when (= sb!vm:n-word-bits 32)
+  (assert (equal (gen-unsigned-mul-by-frac-expr 3 7 most-positive-word)
+                  '(values
+                    (truncate
+                     (truly-the (integer 0 1840700269)
+                      (let* ((num x) (t1 (%multiply-high num 3067833783)))
+                        (ash
+                         (truly-the word (+ t1 (ash
+                                                (truly-the word (- num t1)) -1)))
+                         -1)))
+                     1))))
+  (assert (equal (gen-unsigned-mul-by-frac-expr 7 24 most-positive-word)
+                 '(values
+                   (truncate
+                    (truly-the (integer 0 3758096383)
+                     (%multiply-high-and-shift x 3758096384 0))
+                    3))))
+  (assert (equal (gen-unsigned-mul-by-frac-expr 8 9 most-positive-word)
+                 '(values
+                   (truncate
+                    (truly-the (integer 0 3817748706)
+                     (ash (* x 30541989661) -35))
+                    1)))))
 
 ;;; Return an expression for calculating the quotient like in the previous
 ;;; function, but the quotient is rounded towards positive or negative infinity.
@@ -801,3 +929,28 @@
                                    ,(if (plusp y) (1- y) 0))
                                   (+ rem ,y)))
                (values quot rem)))))))
+
+;;; Replace truncated division of an integer by a constant rational with
+;;; a sequence of multiplications, additions and shifts. The numerator,
+;;; denominator and dividend has to be positive and fit in a machine word.
+;;; Since the remainder is calculated by multiplying with a rational, this
+;;; transform improves the performance only if the remainder is not needed.
+(deftransform truncate ((x y) (word (constant-arg ratio))
+                        *
+                        :policy (and (> speed compilation-speed)
+                                     (> speed space)))
+  "convert unsigned integer - rational division to multiplication"
+  (let* ((y      (lvar-value y))
+         (num (numerator y))
+         (denom (denominator y))
+         (x-type (lvar-type x))
+         (max-x  (or (and (numeric-type-p x-type)
+                          (numeric-type-high x-type))
+                     most-positive-word)))
+    (unless (and (typep num 'word) (typep denom 'word)
+                 ;; Integer division is handled elsewhere.
+                 (/= 1 (denominator y)))
+      (give-up-ir1-transform))
+    `(let* ((quot ,(gen-unsigned-mul-by-frac-expr denom num max-x))
+            (rem (- x (* quot ,y))))
+       (values quot rem))))

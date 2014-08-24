@@ -417,8 +417,9 @@
                                     (print (list :ok `(,op ,@args) :=> fast-result))
                                     (error "oops: ~S, ~S" args call-args)))))))))))
 
-;;; (TRUNCATE <unsigned-word> <constant unsigned-word>) and
-;;; (TRUNCATE <signed-word> <constant signed-word>) is optimized to
+;;; (TRUNCATE <unsigned-word> <constant unsigned-word>),
+;;; (TRUNCATE <signed-word> <constant signed-word>) and
+;;; (TRUNCATE <unsigned-word> <constant rational>) is optimized to
 ;;; use multiplication instead of division. This propagates to FLOOR,
 ;;; MOD and REM. Test that the transform is indeed triggered and test
 ;;; several cases for correct results.
@@ -427,18 +428,23 @@
   (dolist (fun '(truncate floor ceiling mod rem))
     (dolist (arg-type `((unsigned-byte ,sb-vm:n-word-bits)
                         (signed-byte ,sb-vm:n-word-bits)))
-      (let* ((foo (compile nil `(lambda (x)
-                                  (declare (optimize (speed 3)
-                                                     (space 1)
-                                                     (compilation-speed 0))
-                                           (type ,arg-type x))
-                                  (,fun x 9))))
-             (disassembly (with-output-to-string (s)
-                            (disassemble foo :stream s))))
-        ;; KLUDGE copied from test :float-division-using-exact-reciprocal
-        ;; in compiler.pure.lisp.
-        (assert (and (not (search "DIV" disassembly))
-                     (search "MUL" disassembly)))))))
+      (dolist (divisor '(9 9/2))
+        ;; Don't check signed rational division
+        (when (or (typep divisor 'integer)
+                  (equal arg-type `(unsigned-byte ,sb-vm:n-word-bits)))
+          (let* ((foo (compile nil `(lambda (x)
+                                      (declare (optimize (speed 3)
+                                                         (space 1)
+                                                         (compilation-speed 0))
+                                               (type ,arg-type x))
+                                      (,fun x ,divisor))))
+                 (disassembly (with-output-to-string (s)
+                                (disassemble foo :stream s))))
+            ;; KLUDGE copied from test :float-division-using-exact-reciprocal
+            ;; in compiler.pure.lisp.
+            (assert (and (not (search "DIV" disassembly))
+                         (not (search "TRUNCATE" disassembly))
+                         (search "MUL" disassembly)))))))))
 
 (with-test (:name (:integer-division-using-multiplication :correctness))
   (let ((*random-state* (make-random-state t)))
@@ -466,6 +472,8 @@
                          -7 -10 -14 -641 -274177
                          ;; Cases where multiply-add is used
                          19 173 797 235425 235427
+                         ;; Some special cases for division by rationals
+                         7/3 24/7 768/251 171047/3217058415 1653067/4203371246
                          ;; Range extremes
                          3
                          ,most-positive-fixnum
@@ -474,13 +482,29 @@
                          ,(- (expt 2 sb-vm:n-word-bits) 2)
                          ,(1- (expt 2 (1- sb-vm:n-word-bits)))
                          ,(- 1 (expt 2 (1- sb-vm:n-word-bits)))
+                         2/3
+                         ,(/ 3 most-positive-fixnum)
+                         ,(/ (1- (expt 2 sb-vm:n-word-bits))
+                             (- (expt 2 sb-vm:n-word-bits) 2))
+                         ,(/ (1- (expt 2 sb-vm:n-word-bits))
+                             7)
                          ;; Some random values
                          ,@(loop for i from 8 to sb-vm:n-word-bits
                                  for r = (- (random (expt 2 (1+ i)))
                                             (expt 2 i))
-                                 ;; We don't want 0, 1 and powers of 2.
+                                 ;; We don't want 0, 1 and powers of 2
+                                 ;; for integer divisors.
                                  when (not (zerop (logand (abs r) (1- (abs r)))))
-                                 collect r)))
+                                 collect r
+                                 ;; Divide by a random integer to get
+                                 ;; a rational divisor.
+                                 when (not (zerop r))
+                                 collect (/ (abs r)
+                                            (max 1
+                                             (random
+                                              (expt 2
+                                                  (1+ (random
+                                                       sb-vm:n-word-bits)))))))))
         (dolist (fun '(truncate ceiling floor mod rem))
           (let ((foo (compile nil `(lambda (x)
                                      (declare (optimize (speed 3)
@@ -506,9 +530,9 @@
                                         collect r
                                         collect (- r))))
               (when (typep dividend dividend-type)
-                ;; Do the test only if the args are
-                ;; both either signed or unsigned words
-                (dolist (arg-type `((unsigned-byte ,sb-vm:n-word-bits)
+                ;; Do the test only if we're dividing uword/uword,
+                ;; sword/sword or uword/rational.
+                (dolist (arg-type `((or ratio (unsigned-byte ,sb-vm:n-word-bits))
                                     (signed-byte ,sb-vm:n-word-bits)))
                   (when (and (typep dividend arg-type) (typep divisor arg-type))
                     (multiple-value-bind (q1 r1)
